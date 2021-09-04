@@ -301,7 +301,7 @@ bool ddl_log_rename_view(THD *thd, DDL_LOG_STATE *ddl_state,
 bool ddl_log_drop_table_init(THD *thd, DDL_LOG_STATE *ddl_state,
                              const LEX_CSTRING *db,
                              const LEX_CSTRING *comment,
-                             bool skip_binlog);
+                             bool skip_binlog= false);
 bool ddl_log_drop_view_init(THD *thd, DDL_LOG_STATE *ddl_state,
                             const LEX_CSTRING *db);
 bool ddl_log_drop_table(THD *thd, DDL_LOG_STATE *ddl_state,
