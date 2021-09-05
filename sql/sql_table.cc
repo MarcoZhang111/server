@@ -4185,7 +4185,7 @@ bool handle_table_exists(THD *thd,
                          const LEX_CSTRING &table_name,
                          const DDL_options_st options,
                          HA_CREATE_INFO *create_info,
-                         int error)
+                         int &error)
 {
   handlerton *db_type;
 
@@ -4676,7 +4676,7 @@ bool mysql_create_table(THD *thd, TABLE_LIST *create_table,
   int create_table_mode;
   uint save_thd_create_info_options;
   bool is_trans= FALSE;
-  bool result;
+  int result;
   bool atomic_replace= false;
   DBUG_ENTER("mysql_create_table");
 
@@ -4764,6 +4764,9 @@ bool mysql_create_table(THD *thd, TABLE_LIST *create_table,
   {
     rename_param param;
     bool force_if_exists;
+//     if (handle_table_exists(thd, &ddl_log_state_rm, orig.db, orig.table_name,
+//                             *create_info, create_info, result))
+//       goto err;
     if (rename_check(thd, &param, create_table, &orig.db, &orig.table_name,
                      &orig.alias, false))
     {
