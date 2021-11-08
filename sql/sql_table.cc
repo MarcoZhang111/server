@@ -1132,27 +1132,6 @@ bool make_tmp_name(THD *thd, const char *prefix, const char *table_name, TABLE_L
 }
 
 
-static
-bool close_or_remove_table(THD *thd, TABLE_LIST *table)
-{
-  if (thd->locked_tables_mode == LTM_LOCK_TABLES ||
-      thd->locked_tables_mode == LTM_PRELOCKED_UNDER_LOCK_TABLES)
-  {
-    if (table->table)
-    {
-      if (wait_while_table_is_used(thd, table->table, HA_EXTRA_NOT_USED))
-        return true;
-      close_all_tables_for_name(thd, table->table->s,
-                                HA_EXTRA_PREPARE_FOR_DROP, NULL);
-      table->table= 0;
-    }
-  }
-  else
-    tdc_remove_table(thd, table->db.str, table->table_name.str);
-  return false;
-}
-
-
 /**
   Execute the drop of a sequence, view or table (normal or temporary).
 
@@ -4763,18 +4742,24 @@ bool mysql_create_table(THD *thd, TABLE_LIST *create_table,
   if (atomic_replace)
   {
     rename_param param;
+    param.rename_flags= FN_FROM_IS_TMP;
     bool force_if_exists;
-//     if (handle_table_exists(thd, &ddl_log_state_rm, orig.db, orig.table_name,
-//                             *create_info, create_info, result))
-//       goto err;
+    if (handle_table_exists(thd, &ddl_log_state_rm, orig.db, orig.table_name,
+                            *create_info, create_info, result))
+      goto err;
     if (rename_check(thd, &param, create_table, &orig.db, &orig.table_name,
                      &orig.alias, false))
     {
       result= 1;
       goto err;
     }
-    if (close_or_remove_table(thd, create_table) ||
-        rename_do(thd, &param, &ddl_log_state_create, create_table,
+    if (thd->mdl_context.upgrade_shared_lock(create_table->mdl_request.ticket, MDL_EXCLUSIVE,
+                                             thd->variables.lock_wait_timeout))
+    {
+      result= 1;
+      goto err;
+    }
+    if (rename_do(thd, &param, &ddl_log_state_create, create_table,
                   &create_table->db, false, &force_if_exists))
     {
       result= 1;

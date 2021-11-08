@@ -330,6 +330,7 @@ rename_do(THD *thd, rename_param *param, DDL_LOG_STATE *ddl_log_state,
   handlerton *hton;
   LEX_CSTRING *old_alias, *new_alias;
   TRIGGER_RENAME_PARAM rename_param;
+  rename_param.rename_flags= param->rename_flags;
   DBUG_ENTER("do_rename");
   DBUG_PRINT("enter", ("skip_error: %d", (int) skip_error));
 
@@ -343,7 +344,8 @@ rename_do(THD *thd, rename_param *param, DDL_LOG_STATE *ddl_log_state,
     DBUG_RETURN(1);
 #endif
 
-  tdc_remove_table(thd, ren_table->db.str, ren_table->table_name.str);
+  if (!(param->rename_flags & FN_FROM_IS_TMP))
+    tdc_remove_table(thd, ren_table->db.str, ren_table->table_name.str);
 
   if (hton != view_pseudo_hton)
   {
