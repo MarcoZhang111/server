@@ -330,7 +330,7 @@ rename_do(THD *thd, rename_param *param, DDL_LOG_STATE *ddl_log_state,
   handlerton *hton;
   LEX_CSTRING *old_alias, *new_alias;
   TRIGGER_RENAME_PARAM rename_param;
-  rename_param.rename_flags= param->rename_flags;
+  const bool from_is_tmp= param->rename_flags & FN_FROM_IS_TMP;
   DBUG_ENTER("do_rename");
   DBUG_PRINT("enter", ("skip_error: %d", (int) skip_error));
 
@@ -344,7 +344,7 @@ rename_do(THD *thd, rename_param *param, DDL_LOG_STATE *ddl_log_state,
     DBUG_RETURN(1);
 #endif
 
-  if (!(param->rename_flags & FN_FROM_IS_TMP))
+  if (!from_is_tmp)
     tdc_remove_table(thd, ren_table->db.str, ren_table->table_name.str);
 
   if (hton != view_pseudo_hton)
@@ -353,7 +353,8 @@ rename_do(THD *thd, rename_param *param, DDL_LOG_STATE *ddl_log_state,
       *force_if_exists= 1;
 
     /* Check if we can rename triggers */
-    if (Table_triggers_list::prepare_for_rename(thd, &rename_param,
+    if (!from_is_tmp &&
+        Table_triggers_list::prepare_for_rename(thd, &rename_param,
                                                 &ren_table->db,
                                                 old_alias,
                                                 &ren_table->table_name,
@@ -370,7 +371,8 @@ rename_do(THD *thd, rename_param *param, DDL_LOG_STATE *ddl_log_state,
     debug_crash_here("ddl_log_rename_before_rename_table");
     if (!(rc= mysql_rename_table(hton, &ren_table->db, old_alias,
                                  new_db, new_alias, &param->old_version,
-                                 param->rename_flags)))
+                                 param->rename_flags)) &&
+        !from_is_tmp)
     {
       /* Table rename succeded.
          It's safe to start recovery at rename trigger phase

@@ -1589,6 +1589,7 @@ static int ddl_log_execute_action(THD *thd, MEM_ROOT *mem_root,
         break;
       /* Fall through */
     case DDL_DROP_PHASE_BINLOG:
+      // FIXME: is DDL_LOG_FLAG_DROP_SKIP_BINLOG required?
       if (!(ddl_log_entry->flags & DDL_LOG_FLAG_DROP_SKIP_BINLOG))
       {
         if (strcmp(recovery_state.current_db, db.str))
@@ -1606,6 +1607,8 @@ static int ddl_log_execute_action(THD *thd, MEM_ROOT *mem_root,
           if (increment_phase(entry_pos))
             break;
         }
+        // FIXME: this is required to avoid leak
+        // recovery_state.drop_table.free();
         break;
       }
       (void) increment_phase(entry_pos);

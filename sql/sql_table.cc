@@ -4741,25 +4741,15 @@ bool mysql_create_table(THD *thd, TABLE_LIST *create_table,
 
   if (atomic_replace)
   {
+    bool force_if_exists;
     rename_param param;
     param.rename_flags= FN_FROM_IS_TMP;
-    bool force_if_exists;
     if (handle_table_exists(thd, &ddl_log_state_rm, orig.db, orig.table_name,
                             *create_info, create_info, result))
       goto err;
     if (rename_check(thd, &param, create_table, &orig.db, &orig.table_name,
-                     &orig.alias, false))
-    {
-      result= 1;
-      goto err;
-    }
-    if (thd->mdl_context.upgrade_shared_lock(create_table->mdl_request.ticket, MDL_EXCLUSIVE,
-                                             thd->variables.lock_wait_timeout))
-    {
-      result= 1;
-      goto err;
-    }
-    if (rename_do(thd, &param, &ddl_log_state_create, create_table,
+                     &orig.alias, false) ||
+        rename_do(thd, &param, &ddl_log_state_create, create_table,
                   &create_table->db, false, &force_if_exists))
     {
       result= 1;
