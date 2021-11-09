@@ -4575,11 +4575,34 @@ int mysql_create_table_no_lock(THD *thd,
   char path[FN_REFLEN + 1];
   LEX_CSTRING cpath;
   LEX_CUSTRING frm= {0,0};
+  bool atomic_replace= false;
+  TABLE_LIST orig;
+
 
   if (create_info->tmp_table())
     path_length= build_tmptable_filename(thd, path, sizeof(path));
   else
   {
+
+    if (!create_info->or_replace() ||
+        (create_info->db_type->flags & HTON_EXPENSIVE_RENAME) ||
+        DBUG_EVALUATE_IF("ddl_log_expensive_rename", true, false))
+    {
+    }
+    else
+    {
+      atomic_replace= true;
+      orig= *table_list;
+      if (make_tmp_name(thd, "create", table_name->str, table_list))
+      {
+        return 1;
+      }
+      DBUG_ASSERT(create_table_mode == C_ORDINARY_CREATE);
+      create_table_mode= C_ALTER_TABLE;
+      DBUG_ASSERT(!(create_info->options & HA_CREATE_TMP_ALTER));
+      create_info->options|= HA_CREATE_TMP_ALTER;
+    }
+
     const LEX_CSTRING *alias= table_case_name(create_info, table_name);
     uint flags= (create_info->options & HA_CREATE_TMP_ALTER) ? FN_IS_TMP : 0;
     path_length= build_table_filename(path, sizeof(path) - 1, db->str,
@@ -4589,7 +4612,7 @@ int mysql_create_table_no_lock(THD *thd,
     {
       my_error(ER_IDENT_CAUSES_TOO_LONG_PATH, MYF(0), (int) sizeof(path)-1,
                path);
-      return true;
+      return 1;
     }
   }
   lex_string_set3(&cpath, path, path_length);
@@ -4600,6 +4623,27 @@ int mysql_create_table_no_lock(THD *thd,
                          alter_info, create_table_mode,
                          is_trans, &not_used_1, &not_used_2, &frm);
   my_free(const_cast<uchar*>(frm.str));
+
+  if (!res && atomic_replace)
+  {
+    bool force_if_exists;
+    rename_param param;
+    param.rename_flags= FN_FROM_IS_TMP;
+    if (handle_table_exists(thd, ddl_log_state_rm, orig.db, orig.table_name,
+                            *create_info, create_info, res))
+    {
+      // FIXME: drop tmp table?
+      return res;
+    }
+    if (rename_check(thd, &param, table_list, &orig.db, &orig.table_name,
+                     &orig.alias, false) ||
+        rename_do(thd, &param, ddl_log_state_create, table_list,
+                  &table_list->db, false, &force_if_exists))
+    {
+      // FIXME: drop tmp table?
+      return 1;
+    }
+  }
 
   if (!res && create_info->sequence)
   {
@@ -4649,14 +4693,12 @@ bool mysql_create_table(THD *thd, TABLE_LIST *create_table,
                         Alter_info *alter_info)
 {
   TABLE_LIST *pos_in_locked_tables= 0;
-  TABLE_LIST orig;
   MDL_ticket *mdl_ticket= 0;
   DDL_LOG_STATE ddl_log_state_create, ddl_log_state_rm;
   int create_table_mode;
   uint save_thd_create_info_options;
   bool is_trans= FALSE;
   int result;
-  bool atomic_replace= false;
   DBUG_ENTER("mysql_create_table");
 
   DBUG_ASSERT(create_table == thd->lex->query_tables);
@@ -4708,26 +4750,6 @@ bool mysql_create_table(THD *thd, TABLE_LIST *create_table,
   /* We can abort create table for any table type */
   thd->abort_on_warning= thd->is_strict_mode();
 
-  if (!create_info->or_replace() ||
-      (create_info->db_type->flags & HTON_EXPENSIVE_RENAME) ||
-      DBUG_EVALUATE_IF("ddl_log_expensive_rename", true, false))
-  {
-  }
-  else
-  {
-    atomic_replace= true;
-    orig= *create_table;
-    if (make_tmp_name(thd, "create", create_table->table_name.str, create_table))
-    {
-      result= 1;
-      goto err;
-    }
-    DBUG_ASSERT(create_table_mode == C_ORDINARY_CREATE);
-    create_table_mode= C_ALTER_TABLE;
-    DBUG_ASSERT(!(create_info->options & HA_CREATE_TMP_ALTER));
-    create_info->options|= HA_CREATE_TMP_ALTER;
-  }
-
   if (mysql_create_table_no_lock(thd, &ddl_log_state_create, &ddl_log_state_rm,
                                  &create_table->db,
                                  &create_table->table_name, create_info,
@@ -4737,24 +4759,6 @@ bool mysql_create_table(THD *thd, TABLE_LIST *create_table,
   {
     result= 1;
     goto err;
-  }
-
-  if (atomic_replace)
-  {
-    bool force_if_exists;
-    rename_param param;
-    param.rename_flags= FN_FROM_IS_TMP;
-    if (handle_table_exists(thd, &ddl_log_state_rm, orig.db, orig.table_name,
-                            *create_info, create_info, result))
-      goto err;
-    if (rename_check(thd, &param, create_table, &orig.db, &orig.table_name,
-                     &orig.alias, false) ||
-        rename_do(thd, &param, &ddl_log_state_create, create_table,
-                  &create_table->db, false, &force_if_exists))
-    {
-      result= 1;
-      goto err;
-    }
   }
 
   /*
