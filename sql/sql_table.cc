@@ -1102,32 +1102,35 @@ static uint32 get_comment(THD *thd, uint32 comment_pos,
 
 
 static
-bool make_tmp_name(THD *thd, const char *prefix, const char *table_name, TABLE_LIST *res)
+bool make_tmp_name(THD *thd, const char *prefix, const TABLE_LIST *orig, TABLE_LIST *res)
 {
   char res_name[NAME_LEN + 1];
   char file_name[FN_REFLEN];
+  LEX_CSTRING table_name;
 
-  (void) tablename_to_filename(table_name, file_name, sizeof(file_name));
+  (void) tablename_to_filename(orig->table_name.str, file_name, sizeof(file_name));
   size_t len= my_snprintf(res_name, sizeof(res_name) - 1,
                           tmp_file_prefix "-%s-%lx-%llx-%s", prefix, current_pid,
                           thd->thread_id, file_name);
 
-  res->table_name.str= strmake_root(thd->mem_root, res_name, len);
-  if (!res->table_name.str)
+
+
+  table_name.str= strmake_root(thd->mem_root, res_name, len);
+  if (!table_name.str)
   {
     my_error(ER_OUT_OF_RESOURCES, MYF(0));
     return true;
   }
 
-  res->table_name.length= len;
-  res->alias= res->table_name;
+  table_name.length= len;
 
   if (lower_case_table_names)
   {
     my_casedn_str(system_charset_info, res_name);
-    res->table_name.str= strmake_root(thd->mem_root, res_name, len);
+    table_name.str= strmake_root(thd->mem_root, res_name, len);
   }
 
+  res->init_one_table(&orig->db, &table_name, NULL, orig->lock_type);
   return false;
 }
 
@@ -4648,7 +4651,8 @@ bool mysql_create_table(THD *thd, TABLE_LIST *create_table,
                         Alter_info *alter_info)
 {
   TABLE_LIST *pos_in_locked_tables= 0;
-  TABLE_LIST orig;
+  TABLE_LIST tmp_table;
+  TABLE_LIST *orig_table= create_table;
   MDL_ticket *mdl_ticket= 0;
   DDL_LOG_STATE ddl_log_state_create, ddl_log_state_rm;
   int create_table_mode;
@@ -4709,8 +4713,7 @@ bool mysql_create_table(THD *thd, TABLE_LIST *create_table,
 
   if (atomic_replace)
   {
-    orig= *create_table;
-    if (make_tmp_name(thd, "create", create_table->table_name.str, create_table))
+    if (make_tmp_name(thd, "create", create_table, &tmp_table))
     {
       result= 1;
       goto err;
@@ -4718,7 +4721,9 @@ bool mysql_create_table(THD *thd, TABLE_LIST *create_table,
     DBUG_ASSERT(create_table_mode == C_ORDINARY_CREATE);
     create_table_mode= C_ALTER_TABLE;
     DBUG_ASSERT(!(create_info->options & HA_CREATE_TMP_ALTER));
+    // FIXME: restore options?
     create_info->options|= HA_CREATE_TMP_ALTER;
+    create_table= &tmp_table;
   }
 
   if (mysql_create_table_no_lock(thd, &ddl_log_state_create, &ddl_log_state_rm,
@@ -4737,17 +4742,18 @@ bool mysql_create_table(THD *thd, TABLE_LIST *create_table,
     bool force_if_exists;
     rename_param param;
     param.rename_flags= FN_FROM_IS_TMP;
-    if (handle_table_exists(thd, &ddl_log_state_rm, orig.db, orig.table_name,
+    if (handle_table_exists(thd, &ddl_log_state_rm, orig_table->db, orig_table->table_name,
                             *create_info, create_info, result))
       goto err;
-    if (rename_check(thd, &param, create_table, &orig.db, &orig.table_name,
-                     &orig.alias, false) ||
+    if (rename_check(thd, &param, create_table, &orig_table->db, &orig_table->table_name,
+                     &orig_table->alias, false) ||
         rename_do(thd, &param, &ddl_log_state_create, create_table,
                   &create_table->db, false, &force_if_exists))
     {
       result= 1;
       goto err;
     }
+    create_table= orig_table;
   }
 
   /*
