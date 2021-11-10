@@ -4655,7 +4655,7 @@ bool mysql_create_table(THD *thd, TABLE_LIST *create_table,
   uint save_thd_create_info_options;
   bool is_trans= FALSE;
   int result;
-  bool atomic_replace= false;
+  const bool atomic_replace= create_info->is_atomic_replace();
   DBUG_ENTER("mysql_create_table");
 
   DBUG_ASSERT(create_table == thd->lex->query_tables);
@@ -4707,14 +4707,8 @@ bool mysql_create_table(THD *thd, TABLE_LIST *create_table,
   /* We can abort create table for any table type */
   thd->abort_on_warning= thd->is_strict_mode();
 
-  if (!create_info->or_replace() ||
-      (create_info->db_type->flags & HTON_EXPENSIVE_RENAME) ||
-      DBUG_EVALUATE_IF("ddl_log_expensive_rename", true, false))
+  if (atomic_replace)
   {
-  }
-  else
-  {
-    atomic_replace= true;
     orig= *create_table;
     if (make_tmp_name(thd, "create", create_table->table_name.str, create_table))
     {
