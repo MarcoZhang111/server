@@ -43,6 +43,7 @@ t1	CREATE TABLE `t1` (
   UNIQUE KEY `uidx2` (`f1`,`f2`),
   UNIQUE KEY `uidx1` (`f2`)
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1
+INSERT INTO t1 VALUES(2, 2);
 SET DEBUG_SYNC = 'innodb_inplace_alter_table_enter
 		  SIGNAL conc_dml WAIT_FOR go_ahead';
 ALTER TABLE t1 CHANGE COLUMN f1 f11 INT, ALGORITHM=INPLACE;

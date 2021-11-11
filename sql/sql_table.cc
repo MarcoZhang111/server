@@ -7367,7 +7367,8 @@ static bool mysql_inplace_alter_table(THD *thd,
     necessary only for prepare phase (unless we are not under LOCK TABLES) and
     user has not explicitly requested exclusive lock.
   */
-  if ((inplace_supported == HA_ALTER_INPLACE_COPY_NO_LOCK ||
+  if (!ha_alter_info->mdl_exclusive_after_prepare &&
+      (inplace_supported == HA_ALTER_INPLACE_COPY_NO_LOCK ||
        inplace_supported == HA_ALTER_INPLACE_COPY_LOCK ||
        inplace_supported == HA_ALTER_INPLACE_NOCOPY_LOCK ||
        inplace_supported == HA_ALTER_INPLACE_NOCOPY_NO_LOCK) &&
