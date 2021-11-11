@@ -1101,7 +1101,6 @@ static uint32 get_comment(THD *thd, uint32 comment_pos,
 }
 
 
-static
 bool make_tmp_name(THD *thd, const char *prefix, const TABLE_LIST *orig, TABLE_LIST *res)
 {
   char res_name[NAME_LEN + 1];
@@ -4568,7 +4567,8 @@ int mysql_create_table_no_lock(THD *thd,
                                const LEX_CSTRING *table_name,
                                Table_specification_st *create_info,
                                Alter_info *alter_info, bool *is_trans,
-                               int create_table_mode, TABLE_LIST *table_list)
+                               int create_table_mode, TABLE_LIST *table_list,
+                               LEX_CUSTRING *frm)
 {
   KEY *not_used_1;
   uint not_used_2;
@@ -4576,7 +4576,12 @@ int mysql_create_table_no_lock(THD *thd,
   uint path_length;
   char path[FN_REFLEN + 1];
   LEX_CSTRING cpath;
-  LEX_CUSTRING frm= {0,0};
+  LEX_CUSTRING frm_local;
+  if (!frm)
+  {
+    frm_local= {0,0};
+    frm= &frm_local;
+  }
 
   if (create_info->tmp_table())
     path_length= build_tmptable_filename(thd, path, sizeof(path));
@@ -4600,8 +4605,9 @@ int mysql_create_table_no_lock(THD *thd,
                          *db, *table_name, *db, *table_name, cpath,
                          *create_info, create_info,
                          alter_info, create_table_mode,
-                         is_trans, &not_used_1, &not_used_2, &frm);
-  my_free(const_cast<uchar*>(frm.str));
+                         is_trans, &not_used_1, &not_used_2, frm);
+  if (frm == &frm_local)
+    my_free(const_cast<uchar*>(frm_local.str));
 
   if (!res && create_info->sequence)
   {
@@ -4651,7 +4657,7 @@ bool mysql_create_table(THD *thd, TABLE_LIST *create_table,
                         Alter_info *alter_info)
 {
   TABLE_LIST *pos_in_locked_tables= 0;
-  TABLE_LIST tmp_table;
+  TABLE_LIST new_table;
   TABLE_LIST *orig_table= create_table;
   MDL_ticket *mdl_ticket= 0;
   DDL_LOG_STATE ddl_log_state_create, ddl_log_state_rm;
@@ -4713,7 +4719,7 @@ bool mysql_create_table(THD *thd, TABLE_LIST *create_table,
 
   if (atomic_replace)
   {
-    if (make_tmp_name(thd, "create", create_table, &tmp_table))
+    if (make_tmp_name(thd, "create", create_table, &new_table))
     {
       result= 1;
       goto err;
@@ -4723,7 +4729,7 @@ bool mysql_create_table(THD *thd, TABLE_LIST *create_table,
     DBUG_ASSERT(!(create_info->options & HA_CREATE_TMP_ALTER));
     // FIXME: restore options?
     create_info->options|= HA_CREATE_TMP_ALTER;
-    create_table= &tmp_table;
+    create_table= &new_table;
   }
 
   if (mysql_create_table_no_lock(thd, &ddl_log_state_create, &ddl_log_state_rm,
@@ -4742,6 +4748,7 @@ bool mysql_create_table(THD *thd, TABLE_LIST *create_table,
     bool force_if_exists;
     rename_param param;
     param.rename_flags= FN_FROM_IS_TMP;
+    // FIXME: what if handle_table_exists() returns true and result==0?
     if (handle_table_exists(thd, &ddl_log_state_rm, orig_table->db, orig_table->table_name,
                             *create_info, create_info, result))
       goto err;

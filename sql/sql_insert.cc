@@ -4407,6 +4407,9 @@ TABLE *select_create::create_table_from_items(THD *thd, List<Item> *items,
   List_iterator_fast<Item> it(*items);
   Item *item;
   bool save_table_creation_was_logged;
+  int create_table_mode= C_ORDINARY_CREATE;
+  const bool atomic_replace= create_info->is_atomic_replace();
+  LEX_CUSTRING frm;
   DBUG_ENTER("select_create::create_table_from_items");
 
   tmp_table.s= &share;
@@ -4477,6 +4480,21 @@ TABLE *select_create::create_table_from_items(THD *thd, List<Item> *items,
     create_info->mdl_ticket= create_table->table->mdl_ticket;
   }
 
+  if (atomic_replace)
+  {
+    DBUG_ASSERT(!create_info->tmp_table()); // FIXME: test
+    if (make_tmp_name(thd, "create", create_table, &new_table))
+      DBUG_RETURN(NULL);
+    DBUG_ASSERT(create_table_mode == C_ORDINARY_CREATE);
+    create_table_mode= C_ALTER_TABLE;
+    DBUG_ASSERT(!(create_info->options & HA_CREATE_TMP_ALTER));
+    // FIXME: restore options?
+    create_info->options|= HA_CREATE_TMP_ALTER;
+    select_create::create_table= &new_table;
+    select_insert::table_list= &new_table;
+    frm= {0, 0}; // FIXME: free frm
+  }
+
   /*
     Create and lock table.
 
@@ -4498,7 +4516,7 @@ TABLE *select_create::create_table_from_items(THD *thd, List<Item> *items,
                                   &create_table->db,
                                   &create_table->table_name,
                                   create_info, alter_info, NULL,
-                                  C_ORDINARY_CREATE, create_table))
+                                  C_ORDINARY_CREATE, create_table, atomic_replace ? &frm : NULL))
   {
     DEBUG_SYNC(thd,"create_table_select_before_open");
 
@@ -4508,7 +4526,17 @@ TABLE *select_create::create_table_from_items(THD *thd, List<Item> *items,
     */
     create_table->table= 0;
 
-    if (!create_info->tmp_table())
+    if (atomic_replace)
+    {
+      char tmp_path[FN_REFLEN + 1];
+      build_table_filename(tmp_path, sizeof(tmp_path) - 1, new_table.db.str,
+                           new_table.table_name.str, "", FN_IS_TMP);
+
+      create_table->table= thd->create_and_open_tmp_table(&frm, tmp_path, orig_table->db.str,
+                                                          orig_table->table_name.str, true);
+      /* NOTE: if create_and_open_tmp_table() fails the table is dropped by ddl_log_state_create */
+    }
+    else if (!create_info->tmp_table())
     {
       Open_table_context ot_ctx(thd, MYSQL_OPEN_REOPEN);
       TABLE_LIST::enum_open_strategy save_open_strategy;
@@ -4522,6 +4550,7 @@ TABLE *select_create::create_table_from_items(THD *thd, List<Item> *items,
       */
       if (open_table(thd, create_table, &ot_ctx))
       {
+        // FIXME: is it needed now? This should be deleted by ddl_log_state_create
         quick_rm_table(thd, create_info->db_type, &create_table->db,
                        table_case_name(create_info, &create_table->table_name),
                        0);
@@ -4579,7 +4608,8 @@ TABLE *select_create::create_table_from_items(THD *thd, List<Item> *items,
     since it won't wait for the table lock (we have exclusive metadata lock on
     the table) and thus can't get aborted.
   */
-  if (unlikely(!((*lock)= mysql_lock_tables(thd, &table, 1, 0)) ||
+  if (!atomic_replace &&
+      unlikely(!((*lock)= mysql_lock_tables(thd, &table, 1, 0)) ||
                hooks->postlock(&table, 1)))
   {
     /* purecov: begin tested */
@@ -4736,7 +4766,9 @@ select_create::prepare(List<Item> &_values, SELECT_LEX_UNIT *u)
     DBUG_RETURN(-1);
   }
 
-  if (create_info->tmp_table())
+  DBUG_ASSERT(table == create_table->table);
+
+  if (table->s->tmp_table)
   {
     /*
       When the temporary table was created & opened in create_table_impl(),
@@ -4745,14 +4777,14 @@ select_create::prepare(List<Item> &_values, SELECT_LEX_UNIT *u)
       list to keep them inaccessible from inner statements.
       e.g. CREATE TEMPORARY TABLE `t1` AS SELECT * FROM `t1`;
     */
-    saved_tmp_table_share= thd->save_tmp_table_share(create_table->table);
+    saved_tmp_table_share= thd->save_tmp_table_share(table);
   }
 
   if (extra_lock)
   {
     DBUG_ASSERT(m_plock == NULL);
 
-    if (create_info->tmp_table())
+    if (table->s->tmp_table)
       m_plock= &m_lock;
     else
       m_plock= &thd->extra_lock;
@@ -4981,6 +5013,7 @@ bool select_create::send_eof()
     thd->binlog_xid= thd->query_id;
     /* Remember xid's for the case of row based logging */
     ddl_log_update_xid(&ddl_log_state_create, thd->binlog_xid);
+    // FIXME: replace skip_binlog with is_atomic_replace()
     if (ddl_log_state_rm.is_active() && !ddl_log_state_rm.skip_binlog)
       ddl_log_update_xid(&ddl_log_state_rm, thd->binlog_xid);
   }
@@ -5145,6 +5178,33 @@ bool select_create::send_eof()
     }
     mysql_unlock_tables(thd, lock);
   }
+
+  if (create_info->is_atomic_replace())
+  {
+    bool force_if_exists;
+    rename_param param;
+    int result;
+    param.rename_flags= FN_FROM_IS_TMP;
+    if (!handle_table_exists(thd, &ddl_log_state_rm, orig_table->db, orig_table->table_name,
+                             *create_info, create_info, result))
+    {
+      if (rename_check(thd, &param, create_table, &orig_table->db, &orig_table->table_name,
+                      &orig_table->alias, false) ||
+          rename_do(thd, &param, &ddl_log_state_create, create_table,
+                    &create_table->db, false, &force_if_exists))
+      {
+        abort_result_set();
+        DBUG_RETURN(true);
+      }
+    }
+    else if (result) // FIXME: is it right?
+    {
+      abort_result_set();
+      DBUG_RETURN(true);
+    }
+    create_table= orig_table;
+  }
+
   DBUG_RETURN(false);
 }
 
