@@ -6072,6 +6072,7 @@ class select_create: public select_insert {
   TABLE_LIST *orig_table;
   TABLE_LIST new_table;
   Table_specification_st *create_info;
+  bool atomic_replace;
   TABLE_LIST *select_tables;
   Alter_info *alter_info;
   Field **field;
@@ -6094,6 +6095,7 @@ public:
     create_table(table_arg),
     orig_table(table_arg),
     create_info(create_info_par),
+    atomic_replace(create_info->is_atomic_replace()),
     select_tables(select_tables_arg),
     alter_info(alter_info_arg),
     m_plock(NULL), exit_done(0),

@@ -4408,7 +4408,6 @@ TABLE *select_create::create_table_from_items(THD *thd, List<Item> *items,
   Item *item;
   bool save_table_creation_was_logged;
   int create_table_mode= C_ORDINARY_CREATE;
-  const bool atomic_replace= create_info->is_atomic_replace();
   LEX_CUSTRING frm;
   DBUG_ENTER("select_create::create_table_from_items");
 
@@ -5000,7 +4999,7 @@ bool select_create::send_eof()
     is in select_insert::prepare_eof(). For that reason, we
     mark the flag at this point.
   */
-  if (table->s->tmp_table)
+  if (table->s->tmp_table && !atomic_replace)
     thd->transaction->stmt.mark_created_temp_table();
 
   if (thd->slave_thread)
@@ -5053,7 +5052,7 @@ bool select_create::send_eof()
     tables.  This can fail, but we should unlock the table
     nevertheless.
   */
-  if (!table->s->tmp_table)
+  if (!table->s->tmp_table || atomic_replace)
   {
 #ifdef WITH_WSREP
     if (WSREP(thd) &&
@@ -5155,6 +5154,7 @@ bool select_create::send_eof()
 
   if (m_plock)
   {
+    DBUG_ASSERT(!atomic_replace);
     MYSQL_LOCK *lock= *m_plock;
     *m_plock= NULL;
     m_plock= NULL;
