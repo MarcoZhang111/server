@@ -4191,6 +4191,13 @@ bool handle_table_exists(THD *thd,
     if (check_if_log_table(&table_list, TRUE, "CREATE OR REPLACE"))
       return true;
 
+    if (create_info->ok_atomic_replace())
+    {
+    if (ddl_log_rename_table(thd, ddl_log_state, hton,
+                             &ren_table->db, old_alias, new_db, new_alias))
+      DBUG_RETURN(1);
+    }
+
     /*
       Rollback the empty transaction started in mysql_create_table()
       call to open_and_lock_tables() when we are using LOCK TABLES.
