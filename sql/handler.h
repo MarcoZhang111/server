@@ -2430,6 +2430,11 @@ struct HA_CREATE_INFO: public Table_scope_and_contents_source_st,
     else
       return table_options;
   }
+  bool ok_atomic_replace() const
+  {
+    return !(db_type->flags & HTON_EXPENSIVE_RENAME) &&
+      DBUG_EVALUATE_IF("ddl_log_expensive_rename", false, true);
+  }
 };
 
 
@@ -2461,11 +2466,6 @@ struct Table_specification_st: public HA_CREATE_INFO,
   {
     HA_CREATE_INFO::options= 0;
     DDL_options_st::init();
-  }
-  bool ok_atomic_replace() const
-  {
-    return !(db_type->flags & HTON_EXPENSIVE_RENAME) &&
-      DBUG_EVALUATE_IF("ddl_log_expensive_rename", false, true);
   }
   bool is_atomic_replace() const
   {

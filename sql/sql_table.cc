@@ -4163,6 +4163,7 @@ bool handle_table_exists(THD *thd,
                          DDL_LOG_STATE *ddl_log_state_rm,
                          const LEX_CSTRING &db,
                          const LEX_CSTRING &table_name,
+                         const TABLE_LIST *tmp_name,
                          const DDL_options_st options,
                          HA_CREATE_INFO *create_info,
                          int &error)
@@ -4193,9 +4194,10 @@ bool handle_table_exists(THD *thd,
 
     if (create_info->ok_atomic_replace())
     {
-    if (ddl_log_rename_table(thd, ddl_log_state, hton,
-                             &ren_table->db, old_alias, new_db, new_alias))
-      DBUG_RETURN(1);
+      DBUG_ASSERT(tmp_name);
+      if (ddl_log_rename_table(thd, ddl_log_state_rm, create_info->db_type,
+                               &db, &table_name, &tmp_name->db, &tmp_name->table_name))
+        return true;
     }
 
     /*
@@ -4408,7 +4410,7 @@ int create_table_impl(THD *thd,
     }
 
     if (!internal_tmp_table &&
-        handle_table_exists(thd, ddl_log_state_rm, db, table_name, options,
+        handle_table_exists(thd, ddl_log_state_rm, db, table_name, NULL, options,
                             create_info, error))
       goto err;
   }
@@ -4752,21 +4754,10 @@ bool mysql_create_table(THD *thd, TABLE_LIST *create_table,
 
   if (atomic_replace)
   {
-    bool force_if_exists;
-    rename_param param;
-    param.rename_flags= FN_FROM_IS_TMP;
     // FIXME: what if handle_table_exists() returns true and result==0?
     if (handle_table_exists(thd, &ddl_log_state_rm, orig_table->db, orig_table->table_name,
-                            *create_info, create_info, result))
+                            &new_table, *create_info, create_info, result))
       goto err;
-    if (rename_check(thd, &param, create_table, &orig_table->db, &orig_table->table_name,
-                     &orig_table->alias, false) ||
-        rename_do(thd, &param, &ddl_log_state_create, create_table,
-                  &create_table->db, false, &force_if_exists))
-    {
-      result= 1;
-      goto err;
-    }
     create_table= orig_table;
   }
 
@@ -4867,12 +4858,19 @@ err:
   else
   {
     /*
-      NOTE: write renamed table name into drop-chain and replay it after
-      CREATE OR REPLACE finishes. We need to finalize rename-chain first,
-      so replay would not execute it.
+      1. (C) Write DDL_LOG_CREATE_TABLE_ACTION of TMP table (drops TMP table);
+      2. Create new table as TMP;
+      3. Do everything with TMP (like insert data);
+      4. (D) Write DDL_LOG_RENAME_TABLE_ACTION from ORIG to TMP (replays TMP -> ORIG);
+      5. (D) Write DDL_LOG_DROP_ACTION of ORIG;
+      6. (C) close chain;
+      7. (D) replay chain
     */
+
+    /* NOTE: holds drop tmp table */
     ddl_log_complete(&ddl_log_state_create);
     debug_crash_here("ddl_log_replace_before_remove_backup");
+    /* NOTE: holds drop orig table, rename tmp to orig  */
     result|= ddl_log_revert(thd, &ddl_log_state_rm);
     debug_crash_here("ddl_log_replace_after_remove_backup");
   }

@@ -3115,6 +3115,7 @@ static bool ddl_log_drop_init(THD *thd, DDL_LOG_STATE *ddl_state,
   bzero(&ddl_log_entry, sizeof(ddl_log_entry));
 
   ddl_log_entry.action_type=  DDL_LOG_DROP_INIT_ACTION;
+  ddl_log_entry.next_entry=   ddl_state->list ? ddl_state->list->entry_pos : 0;
   ddl_log_entry.from_db=      *const_cast<LEX_CSTRING*>(db);
   ddl_log_entry.tmp_name=     *const_cast<LEX_CSTRING*>(comment);
   ddl_log_entry.unique_id=    ddl_state->master_chain_pos;
@@ -3175,6 +3176,10 @@ static bool ddl_log_drop(THD *thd, DDL_LOG_STATE *ddl_state,
   {
     ddl_log_entry.flags= DDL_LOG_FLAG_DROP_SKIP_BINLOG;
     ddl_state->flags|= DDL_LOG_FLAG_DROP_SKIP_BINLOG;
+  }
+  if (ddl_state->list->next_active_log_entry)
+  {
+    ddl_log_entry.next_entry= ddl_state->list->next_active_log_entry->entry_pos;
   }
 
   mysql_mutex_lock(&LOCK_gdl);

@@ -5071,8 +5071,8 @@ bool select_create::send_eof()
       */
       wsrep_key_arr_t key_arr= {0, 0};
       wsrep_prepare_keys_for_isolation(thd,
-                                       create_table->db.str,
-                                       create_table->table_name.str,
+                                       orig_table->db.str,
+                                       orig_table->table_name.str,
                                        table_list,
                                        &key_arr);
       int rcode= wsrep_thd_append_key(thd, key_arr.keys, key_arr.keys_len,
@@ -5123,8 +5123,8 @@ bool select_create::send_eof()
     else
       lex_string_set(&ddl_log.org_storage_engine_name,
                      ha_resolve_storage_engine_name(create_info->db_type));
-    ddl_log.org_database=   create_table->db;
-    ddl_log.org_table=      create_table->table_name;
+    ddl_log.org_database=   orig_table->db;
+    ddl_log.org_table=      orig_table->table_name;
     ddl_log.org_table_id=   create_info->tabledef_version;
     backup_log_ddl(&ddl_log);
   }
@@ -5186,7 +5186,7 @@ bool select_create::send_eof()
     int result;
     param.rename_flags= FN_FROM_IS_TMP;
     if (!handle_table_exists(thd, &ddl_log_state_rm, orig_table->db, orig_table->table_name,
-                             *create_info, create_info, result))
+                             &new_table, *create_info, create_info, result))
     {
       if (rename_check(thd, &param, create_table, &orig_table->db, &orig_table->table_name,
                       &orig_table->alias, false) ||

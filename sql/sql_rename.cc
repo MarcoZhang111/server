@@ -246,6 +246,7 @@ do_rename_temporary(THD *thd, TABLE_LIST *ren_table, TABLE_LIST *new_table)
 */
 
 int
+/* FIXME: revert back rename_check, rename_do? */
 rename_check(THD *thd, rename_param *param,
              TABLE_LIST *ren_table,
              const LEX_CSTRING *new_db,

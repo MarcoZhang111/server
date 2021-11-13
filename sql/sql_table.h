@@ -249,6 +249,7 @@ bool handle_table_exists(THD *thd,
                          DDL_LOG_STATE *ddl_log_state_rm,
                          const LEX_CSTRING &db,
                          const LEX_CSTRING &table_name,
+                         const TABLE_LIST *tmp_name,
                          const DDL_options_st options,
                          HA_CREATE_INFO *create_info,
                          int &error);
