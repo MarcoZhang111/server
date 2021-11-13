@@ -29,6 +29,7 @@ Alter_info::Alter_info(const Alter_info &rhs, MEM_ROOT *mem_root)
   create_list(rhs.create_list, mem_root),
   alter_index_ignorability_list(rhs.alter_index_ignorability_list, mem_root),
   check_constraint_list(rhs.check_constraint_list, mem_root),
+  select_field_count(rhs.select_field_count),
   flags(rhs.flags), partition_flags(rhs.partition_flags),
   keys_onoff(rhs.keys_onoff),
   partition_names(rhs.partition_names, mem_root),

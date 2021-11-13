@@ -1179,7 +1179,7 @@ int mysql_rm_table_no_locks(THD *thd, TABLE_LIST *tables,
                             bool drop_temporary, bool drop_view,
                             bool drop_sequence,
                             bool dont_log_query,
-                            bool dont_free_locks)
+                            bool dont_free_locks, bool atomic_replace)
 {
   TABLE_LIST *table;
   char path[FN_REFLEN + 1];
@@ -1430,7 +1430,7 @@ int mysql_rm_table_no_locks(THD *thd, TABLE_LIST *tables,
     if (!table_count++)
     {
       LEX_CSTRING comment= {comment_start, (size_t) comment_len};
-      if (ddl_log_drop_table_init(thd, ddl_log_state, current_db, &comment))
+      if (ddl_log_drop_table_init(thd, ddl_log_state, current_db, &comment, atomic_replace))
       {
         error= 1;
         goto err;
@@ -4169,10 +4169,21 @@ bool handle_table_exists(THD *thd,
                          int &error)
 {
   handlerton *db_type;
+  const bool atomic_replace= tmp_name != NULL;
 
   if (!ha_table_exists(thd, &db, &table_name, &create_info->org_tabledef_version,
       NULL, &db_type))
+  {
+    if (atomic_replace)
+    {
+      DBUG_ASSERT(options.or_replace());
+      DBUG_ASSERT(create_info->ok_atomic_replace());
+      if (ddl_log_rename_table(thd, ddl_log_state_rm, create_info->db_type,
+                               &db, &table_name, &tmp_name->db, &tmp_name->table_name))
+        return true;
+    }
     return false;
+  }
 
   if (ha_check_if_updates_are_ignored(thd, db_type, "CREATE"))
   {
@@ -4192,9 +4203,9 @@ bool handle_table_exists(THD *thd,
     if (check_if_log_table(&table_list, TRUE, "CREATE OR REPLACE"))
       return true;
 
-    if (create_info->ok_atomic_replace())
+    if (atomic_replace)
     {
-      DBUG_ASSERT(tmp_name);
+      DBUG_ASSERT(create_info->ok_atomic_replace());
       if (ddl_log_rename_table(thd, ddl_log_state_rm, create_info->db_type,
                                &db, &table_name, &tmp_name->db, &tmp_name->table_name))
         return true;
@@ -4208,7 +4219,7 @@ bool handle_table_exists(THD *thd,
     /* Remove normal table without logging. Keep tables locked */
     if (mysql_rm_table_no_locks(thd, &table_list, &thd->db,
                                 ddl_log_state_rm,
-                                0, 0, 0, 0, 1, 1))
+                                0, 0, 0, 0, 1, 1, atomic_replace))
       return true;
 
     debug_crash_here("ddl_log_create_after_drop");
@@ -4825,7 +4836,7 @@ err:
     }
     thd->binlog_xid= thd->query_id;
     ddl_log_update_xid(&ddl_log_state_create, thd->binlog_xid);
-    if (ddl_log_state_rm.is_active() && !ddl_log_state_rm.skip_binlog)
+    if (!atomic_replace)
       ddl_log_update_xid(&ddl_log_state_rm, thd->binlog_xid);
     debug_crash_here("ddl_log_create_before_binlog");
     if (unlikely(write_bin_log(thd, result ? FALSE : TRUE, thd->query(),

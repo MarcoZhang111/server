@@ -4408,7 +4408,7 @@ TABLE *select_create::create_table_from_items(THD *thd, List<Item> *items,
   Item *item;
   bool save_table_creation_was_logged;
   int create_table_mode= C_ORDINARY_CREATE;
-  LEX_CUSTRING frm;
+  LEX_CUSTRING frm= {0, 0};
   DBUG_ENTER("select_create::create_table_from_items");
 
   tmp_table.s= &share;
@@ -4491,7 +4491,6 @@ TABLE *select_create::create_table_from_items(THD *thd, List<Item> *items,
     create_info->options|= HA_CREATE_TMP_ALTER;
     select_create::create_table= &new_table;
     select_insert::table_list= &new_table;
-    frm= {0, 0}; // FIXME: free frm
   }
 
   /*
@@ -4577,6 +4576,9 @@ TABLE *select_create::create_table_from_items(THD *thd, List<Item> *items,
   }
   else
     create_table->table= 0;                     // Create failed
+
+  DBUG_ASSERT(frm.str || !atomic_replace);
+  my_free(const_cast<uchar*>(frm.str));
   
   if (unlikely(!(table= create_table->table)))
   {
@@ -4634,6 +4636,7 @@ TABLE *select_create::create_table_from_items(THD *thd, List<Item> *items,
     DBUG_RETURN(NULL);
     /* purecov: end */
   }
+  // FIXME: check ORIG name is locked so it won't be created by anyone else
   table->s->table_creation_was_logged= save_table_creation_was_logged;
   if (!table->s->tmp_table)
     table->file->prepare_for_row_logging();
@@ -5045,7 +5048,24 @@ bool select_create::send_eof()
     }
   }
 
+  // FIXME: replace skip_binlog with is_atomic_replace()
   DBUG_ASSERT(!(table->s->tmp_table && ddl_log_state_rm.skip_binlog));
+
+  if (create_info->is_atomic_replace())
+  {
+    int result;
+    if (!handle_table_exists(thd, &ddl_log_state_rm, orig_table->db, orig_table->table_name,
+                             &new_table, *create_info, create_info, result))
+    {
+    }
+    else if (result) // FIXME: is it right?
+    {
+      abort_result_set();
+      DBUG_RETURN(true);
+    }
+    create_table= orig_table;
+  }
+
 
   /*
     Do an implicit commit at end of statement for non-temporary
@@ -5071,8 +5091,8 @@ bool select_create::send_eof()
       */
       wsrep_key_arr_t key_arr= {0, 0};
       wsrep_prepare_keys_for_isolation(thd,
-                                       orig_table->db.str,
-                                       orig_table->table_name.str,
+                                       create_table->db.str,
+                                       create_table->table_name.str,
                                        table_list,
                                        &key_arr);
       int rcode= wsrep_thd_append_key(thd, key_arr.keys, key_arr.keys_len,
@@ -5123,8 +5143,8 @@ bool select_create::send_eof()
     else
       lex_string_set(&ddl_log.org_storage_engine_name,
                      ha_resolve_storage_engine_name(create_info->db_type));
-    ddl_log.org_database=   orig_table->db;
-    ddl_log.org_table=      orig_table->table_name;
+    ddl_log.org_database=   create_table->db;
+    ddl_log.org_table=      create_table->table_name;
     ddl_log.org_table_id=   create_info->tabledef_version;
     backup_log_ddl(&ddl_log);
   }
@@ -5143,6 +5163,12 @@ bool select_create::send_eof()
   }
   debug_crash_here("ddl_log_replace_after_remove_backup");
   debug_crash_here("ddl_log_create_log_complete");
+
+  if (atomic_replace)
+  {
+    thd->drop_temporary_table(table, NULL, false);
+    table= NULL;
+  }
 
   /*
     exit_done must only be set after last potential call to
@@ -5177,32 +5203,6 @@ bool select_create::send_eof()
       /* Fail. Continue without locking the table */
     }
     mysql_unlock_tables(thd, lock);
-  }
-
-  if (create_info->is_atomic_replace())
-  {
-    bool force_if_exists;
-    rename_param param;
-    int result;
-    param.rename_flags= FN_FROM_IS_TMP;
-    if (!handle_table_exists(thd, &ddl_log_state_rm, orig_table->db, orig_table->table_name,
-                             &new_table, *create_info, create_info, result))
-    {
-      if (rename_check(thd, &param, create_table, &orig_table->db, &orig_table->table_name,
-                      &orig_table->alias, false) ||
-          rename_do(thd, &param, &ddl_log_state_create, create_table,
-                    &create_table->db, false, &force_if_exists))
-      {
-        abort_result_set();
-        DBUG_RETURN(true);
-      }
-    }
-    else if (result) // FIXME: is it right?
-    {
-      abort_result_set();
-      DBUG_RETURN(true);
-    }
-    create_table= orig_table;
   }
 
   DBUG_RETURN(false);
@@ -5277,6 +5277,8 @@ void select_create::abort_result_set()
       m_plock= NULL;
     }
 
+    if (atomic_replace)
+      create_table= &new_table;
     drop_open_table(thd, table, &create_table->db, &create_table->table_name);
     table=0;                                    // Safety
     if (thd->log_current_statement)
@@ -5290,11 +5292,12 @@ void select_create::abort_result_set()
       {
         backup_log_info ddl_log;
         bzero(&ddl_log, sizeof(ddl_log));
+        // FIXME: do we need this in case of atomic_replace?
         ddl_log.query= { C_STRING_WITH_LEN("DROP_AFTER_CREATE") };
         ddl_log.org_partitioned= (create_info->db_type == partition_hton);
         ddl_log.org_storage_engine_name= create_info->org_storage_engine_name;
-        ddl_log.org_database=     create_table->db;
-        ddl_log.org_table=        create_table->table_name;
+        ddl_log.org_database=     orig_table->db;
+        ddl_log.org_table=        orig_table->table_name;
         ddl_log.org_table_id=     create_info->tabledef_version;
         backup_log_ddl(&ddl_log);
       }

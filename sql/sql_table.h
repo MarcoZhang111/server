@@ -213,7 +213,8 @@ int mysql_rm_table_no_locks(THD *thd, TABLE_LIST *tables,
                             bool if_exists,
                             bool drop_temporary, bool drop_view,
                             bool drop_sequence,
-                            bool dont_log_query, bool dont_free_locks);
+                            bool dont_log_query, bool dont_free_locks,
+                            bool atomic_replace= false);
 bool log_drop_table(THD *thd, const LEX_CSTRING *db_name,
                     const LEX_CSTRING *table_name, const LEX_CSTRING *handler,
                     bool partitioned, const LEX_CUSTRING *id,

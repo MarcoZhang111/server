@@ -133,6 +133,13 @@ public:
   char   current_db[NAME_LEN];
   uint   execute_entry_pos;
   ulonglong xid;
+  void free()
+  {
+    drop_table.free();
+    drop_view.free();
+    query.free();
+    db.free();
+  }
 };
 
 static st_global_ddl_log global_ddl_log;
@@ -1607,8 +1614,6 @@ static int ddl_log_execute_action(THD *thd, MEM_ROOT *mem_root,
           if (increment_phase(entry_pos))
             break;
         }
-        // FIXME: this is required to avoid leak
-        // recovery_state.drop_table.free();
         break;
       }
       (void) increment_phase(entry_pos);
@@ -2427,6 +2432,7 @@ static bool ddl_log_execute_entry_no_lock(THD *thd, uint first_entry)
     read_entry= ddl_log_entry.next_entry;
   } while (read_entry);
 
+  recovery_state.free(); // FIXME: is this correct?
   free_root(&mem_root, MYF(0));
   DBUG_RETURN(FALSE);
 }

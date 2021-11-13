@@ -3,5 +3,6 @@ insert into t2 values (1, 1), (2, 2);
 create table t1 (x int);
 create or replace table t1 (y int);
 show create table t1;
-# create or replace table t1 select * from t2;
+create or replace table t1 select * from t2;
+show create table t2;
 drop tables if exists t1, t2;
