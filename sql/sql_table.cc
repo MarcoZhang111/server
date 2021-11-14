@@ -1387,12 +1387,13 @@ int mysql_rm_table_no_locks(THD *thd, TABLE_LIST *tables,
       DBUG_ASSERT(thd->mdl_context.is_lock_owner(MDL_key::TABLE, db.str,
                                                  table_name.str, MDL_SHARED));
 
+      /* NOTE: alias holds original table name, table_name holds lowercase name */
       alias= (lower_case_table_names == 2) ? table->alias : table_name;
       /* remove .frm file and engine files */
       path_length= build_table_filename(path, sizeof(path) - 1, db.str,
                                         alias.str, reg_ext, 0);
       path_end= path + path_length - reg_ext_length;
-    }
+    } /* if (!drop_temporary) */
 
     DEBUG_SYNC(thd, "rm_table_no_locks_before_delete_table");
     if (drop_temporary)
@@ -1500,6 +1501,8 @@ int mysql_rm_table_no_locks(THD *thd, TABLE_LIST *tables,
       }
 
       debug_crash_here("ddl_log_drop_before_delete_table");
+      if (atomic_replace)
+        goto report_error;
       error= ha_delete_table(thd, hton, path, &db, &table_name,
                              enoent_warning);
       debug_crash_here("ddl_log_drop_after_delete_table");
@@ -1687,7 +1690,7 @@ report_error:
         backup_log_ddl(&ddl_log);
       }
     }
-    if (!was_view)
+    if (!was_view && !atomic_replace)
       ddl_log_update_phase(ddl_log_state, DDL_DROP_PHASE_BINLOG);
 
     if (!dont_log_query &&
@@ -4175,6 +4178,7 @@ inline bool handle_atomic_replace(THD *thd,
   if (ddl_log_rename_table(thd, ddl_log_state_rm, create_info->db_type,
                             &db, &table_name, &tmp_name->db, &tmp_name->table_name))
     return true;
+  debug_crash_here("ddl_log_replace_after_log_rename");
   return false;
 }
 
