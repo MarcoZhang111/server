@@ -5051,11 +5051,11 @@ bool select_create::send_eof()
   // FIXME: replace skip_binlog with is_atomic_replace()
   DBUG_ASSERT(!(table->s->tmp_table && ddl_log_state_rm.skip_binlog));
 
-  if (create_info->is_atomic_replace())
+  if (atomic_replace)
   {
     int result;
-    if (!handle_table_exists(thd, &ddl_log_state_rm, orig_table->db, orig_table->table_name,
-                             &new_table, *create_info, create_info, result))
+    if (!create_table_exists(thd, &ddl_log_state_create, &ddl_log_state_rm, orig_table->db,
+                             orig_table->table_name, &new_table, *create_info, create_info, result))
     {
     }
     else if (result) // FIXME: is it right?

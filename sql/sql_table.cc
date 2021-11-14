@@ -4159,7 +4159,28 @@ err:
 }
 
 
-bool handle_table_exists(THD *thd,
+static
+inline bool handle_atomic_replace(THD *thd,
+                         DDL_LOG_STATE *ddl_log_state_create,
+                         DDL_LOG_STATE *ddl_log_state_rm,
+                         const LEX_CSTRING &db,
+                         const LEX_CSTRING &table_name,
+                         const TABLE_LIST *tmp_name,
+                         const DDL_options_st options,
+                         HA_CREATE_INFO *create_info)
+{
+  DBUG_ASSERT(options.or_replace());
+  DBUG_ASSERT(create_info->ok_atomic_replace());
+  ddl_log_link_events(ddl_log_state_rm, ddl_log_state_create);
+  if (ddl_log_rename_table(thd, ddl_log_state_rm, create_info->db_type,
+                            &db, &table_name, &tmp_name->db, &tmp_name->table_name))
+    return true;
+  return false;
+}
+
+
+bool create_table_exists(THD *thd,
+                         DDL_LOG_STATE *ddl_log_state_create,
                          DDL_LOG_STATE *ddl_log_state_rm,
                          const LEX_CSTRING &db,
                          const LEX_CSTRING &table_name,
@@ -4174,14 +4195,10 @@ bool handle_table_exists(THD *thd,
   if (!ha_table_exists(thd, &db, &table_name, &create_info->org_tabledef_version,
       NULL, &db_type))
   {
-    if (atomic_replace)
-    {
-      DBUG_ASSERT(options.or_replace());
-      DBUG_ASSERT(create_info->ok_atomic_replace());
-      if (ddl_log_rename_table(thd, ddl_log_state_rm, create_info->db_type,
-                               &db, &table_name, &tmp_name->db, &tmp_name->table_name))
-        return true;
-    }
+    if (atomic_replace &&
+        handle_atomic_replace(thd, ddl_log_state_create, ddl_log_state_rm, db,
+                              table_name, tmp_name, options, create_info))
+      return true;
     return false;
   }
 
@@ -4203,13 +4220,10 @@ bool handle_table_exists(THD *thd,
     if (check_if_log_table(&table_list, TRUE, "CREATE OR REPLACE"))
       return true;
 
-    if (atomic_replace)
-    {
-      DBUG_ASSERT(create_info->ok_atomic_replace());
-      if (ddl_log_rename_table(thd, ddl_log_state_rm, create_info->db_type,
-                               &db, &table_name, &tmp_name->db, &tmp_name->table_name))
-        return true;
-    }
+    if (atomic_replace &&
+        handle_atomic_replace(thd, ddl_log_state_create, ddl_log_state_rm, db,
+                              table_name, tmp_name, options, create_info))
+      return true;
 
     /*
       Rollback the empty transaction started in mysql_create_table()
@@ -4421,8 +4435,8 @@ int create_table_impl(THD *thd,
     }
 
     if (!internal_tmp_table &&
-        handle_table_exists(thd, ddl_log_state_rm, db, table_name, NULL, options,
-                            create_info, error))
+        create_table_exists(thd, NULL, ddl_log_state_rm, db, table_name,
+                            NULL, options, create_info, error))
       goto err;
   }
 
@@ -4766,8 +4780,8 @@ bool mysql_create_table(THD *thd, TABLE_LIST *create_table,
   if (atomic_replace)
   {
     // FIXME: what if handle_table_exists() returns true and result==0?
-    if (handle_table_exists(thd, &ddl_log_state_rm, orig_table->db, orig_table->table_name,
-                            &new_table, *create_info, create_info, result))
+    if (create_table_exists(thd, &ddl_log_state_create, &ddl_log_state_rm, orig_table->db,
+                            orig_table->table_name, &new_table, *create_info, create_info, result))
       goto err;
     create_table= orig_table;
   }

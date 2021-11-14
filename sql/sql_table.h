@@ -246,7 +246,8 @@ bool check_engine(THD *, const char *, const char *, HA_CREATE_INFO *);
 
 bool make_tmp_name(THD *thd, const char *prefix, const TABLE_LIST *orig, TABLE_LIST *res);
 
-bool handle_table_exists(THD *thd,
+bool create_table_exists(THD *thd,
+                         DDL_LOG_STATE *ddl_log_state_create,
                          DDL_LOG_STATE *ddl_log_state_rm,
                          const LEX_CSTRING &db,
                          const LEX_CSTRING &table_name,

@@ -1519,20 +1519,6 @@ static int ddl_log_execute_action(THD *thd, MEM_ROOT *mem_root,
   case DDL_LOG_DROP_INIT_ACTION:
   {
     LEX_CSTRING *comment= &ddl_log_entry->tmp_name;
-    const uint master_chain_pos= (uint) ddl_log_entry->unique_id;
-    /*
-      This drop table was depending on another chain and should only be executed
-      if the other chain is not active.
-      One such case is CREATE OR REPLACE TABLE ... which renamed the original table
-      and created this DROP TABLE event to be able to DROP the backup table if we
-      have a crash directly after closing of the CREATE event.
-    */
-    if (master_chain_pos && is_execute_entry_active(master_chain_pos))
-    {
-      DBUG_ASSERT(ddl_log_entry->next_entry);
-      error= disable_execute_entry(ddl_log_entry->next_entry);
-        break;
-    }
     recovery_state.drop_table.length(0);
     recovery_state.drop_table.set_charset(system_charset_info);
     recovery_state.drop_table.append(STRING_WITH_LEN("DROP TABLE IF EXISTS "));
@@ -3047,6 +3033,7 @@ static bool ddl_log_write(DDL_LOG_STATE *ddl_state,
   mysql_mutex_lock(&LOCK_gdl);
   error= ((ddl_log_write_entry(ddl_log_entry, &log_entry)) ||
           ddl_log_write_execute_entry(log_entry->entry_pos,
+                                      ddl_state->master_chain_pos,
                                       &ddl_state->execute_entry));
   mysql_mutex_unlock(&LOCK_gdl);
   if (error)
@@ -3138,7 +3125,6 @@ static bool ddl_log_drop_init(THD *thd, DDL_LOG_STATE *ddl_state,
   ddl_log_entry.next_entry=   ddl_state->list ? ddl_state->list->entry_pos : 0;
   ddl_log_entry.from_db=      *const_cast<LEX_CSTRING*>(db);
   ddl_log_entry.tmp_name=     *const_cast<LEX_CSTRING*>(comment);
-  ddl_log_entry.unique_id=    ddl_state->master_chain_pos;
 
   DBUG_RETURN(ddl_log_write(ddl_state, &ddl_log_entry));
 }
