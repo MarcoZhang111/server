@@ -86,6 +86,7 @@ let $statements='CREATE OR REPLACE TABLE t1 (new int)',
 #let $statement_count=1;
 #let $statements='CREATE OR REPLACE TABLE t1 LIKE const_table';
 
+# FIXME: const_table for several engines?
 create table const_table (new int, b int) engine=myisam;
 insert into const_table values (1,1),(2,2);
 flush tables;

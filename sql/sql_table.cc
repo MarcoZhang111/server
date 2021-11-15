@@ -4256,7 +4256,7 @@ bool create_table_exists(THD *thd,
     /*
       Restart statement transactions for the case of CREATE ... SELECT.
     */
-    if (thd->lex->first_select_lex()->item_list.elements &&
+    if (!atomic_replace && thd->lex->first_select_lex()->item_list.elements &&
         restart_trans_for_tables(thd, thd->lex->query_tables))
       return true;
   }

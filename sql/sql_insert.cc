@@ -5048,12 +5048,18 @@ bool select_create::send_eof()
     }
   }
 
-  // FIXME: replace skip_binlog with is_atomic_replace()
-  DBUG_ASSERT(!(table->s->tmp_table && ddl_log_state_rm.skip_binlog));
 
   if (atomic_replace)
   {
+    DBUG_ASSERT(table->s->tmp_table);
+
     int result;
+    if (mysql_trans_commit_alter_copy_data(thd))
+    {
+      abort_result_set();
+      DBUG_RETURN(true);
+    }
+
     if (!create_table_exists(thd, &ddl_log_state_create, &ddl_log_state_rm, orig_table->db,
                              orig_table->table_name, &new_table, *create_info, create_info, result))
     {
@@ -5260,6 +5266,8 @@ void select_create::abort_result_set()
     {
       DBUG_ASSERT(saved_tmp_table_share);
       thd->restore_tmp_table_share(saved_tmp_table_share);
+      if (atomic_replace)
+        create_table= &new_table;
     }
 
     if (table->file->inited &&
@@ -5277,8 +5285,6 @@ void select_create::abort_result_set()
       m_plock= NULL;
     }
 
-    if (atomic_replace)
-      create_table= &new_table;
     drop_open_table(thd, table, &create_table->db, &create_table->table_name);
     table=0;                                    // Safety
     if (thd->log_current_statement)
