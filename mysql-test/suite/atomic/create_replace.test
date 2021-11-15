@@ -76,15 +76,15 @@ let $crash_points='ddl_log_replace_after_log_rename',
                   'ddl_log_replace_after_remove_backup';
 
 #let $crash_count=1;
-#let $crash_points='ddl_log_replace_after_log_rename';
+#let $crash_points='ddl_log_create_after_send_data';
 
-let $statement_count=3;
+let $statement_count=2;
 let $statements='CREATE OR REPLACE TABLE t1 (new int)',
                 'CREATE OR REPLACE TABLE t1 LIKE const_table',
                 'CREATE OR REPLACE TABLE t1 SELECT * from const_table';
 
-let $statement_count=1;
-#let $statements='CREATE OR REPLACE TABLE t1 SELECT * from const_table';
+#let $statement_count=1;
+#let $statements='CREATE OR REPLACE TABLE t1 LIKE const_table';
 
 create table const_table (new int, b int) engine=myisam;
 insert into const_table values (1,1),(2,2);

@@ -4695,14 +4695,14 @@ bool mysql_create_table(THD *thd, TABLE_LIST *create_table,
                         Alter_info *alter_info)
 {
   TABLE_LIST *pos_in_locked_tables= 0;
-  TABLE_LIST new_table;
-  TABLE_LIST *orig_table= create_table;
   MDL_ticket *mdl_ticket= 0;
   DDL_LOG_STATE ddl_log_state_create, ddl_log_state_rm;
   int create_table_mode;
   uint save_thd_create_info_options;
   bool is_trans= FALSE;
   int result;
+  TABLE_LIST new_table;
+  TABLE_LIST *orig_table= create_table;
   const bool atomic_replace= create_info->is_atomic_replace();
   DBUG_ENTER("mysql_create_table");
 
@@ -5209,6 +5209,10 @@ bool mysql_create_like_table(THD* thd, TABLE_LIST* table,
   bool src_table_exists= FALSE;
   uint not_used;
   int create_res;
+  TABLE_LIST new_table;
+  TABLE_LIST *orig_table= table;
+  const bool atomic_replace= create_info->is_atomic_replace();
+  int create_table_mode= C_ORDINARY_CREATE;
   DBUG_ENTER("mysql_create_like_table");
 
   bzero(&ddl_log_state_create, sizeof(ddl_log_state_create));
@@ -5307,17 +5311,41 @@ bool mysql_create_like_table(THD* thd, TABLE_LIST* table,
   if ((local_create_info.table= thd->lex->query_tables->table))
     pos_in_locked_tables= local_create_info.table->pos_in_locked_tables;    
 
+  if (atomic_replace)
+  {
+    if (make_tmp_name(thd, "create", table, &new_table))
+    {
+      goto err;
+    }
+    DBUG_ASSERT(create_table_mode == C_ORDINARY_CREATE);
+    create_table_mode= C_ALTER_TABLE;
+    DBUG_ASSERT(!(create_info->options & HA_CREATE_TMP_ALTER));
+    // FIXME: restore options?
+    create_info->options|= HA_CREATE_TMP_ALTER;
+    table= &new_table;
+  }
+
   res= ((create_res=
          mysql_create_table_no_lock(thd,
                                     &ddl_log_state_create, &ddl_log_state_rm,
                                     &table->db, &table->table_name,
                                     &local_create_info, &local_alter_info,
-                                    &is_trans, C_ORDINARY_CREATE,
+                                    &is_trans, create_table_mode,
                                     table)) > 0);
   /* Remember to log if we deleted something */
   do_logging= thd->log_current_statement;
   if (res)
     goto err;
+
+  if (atomic_replace)
+  {
+    // FIXME: what if handle_table_exists() returns true and result==0?
+    if (create_table_exists(thd, &ddl_log_state_create, &ddl_log_state_rm, orig_table->db,
+                            orig_table->table_name, &new_table, local_create_info,
+                            &local_create_info, res))
+      goto err;
+    table= orig_table;
+  }
 
   /*
     Check if we are doing CREATE OR REPLACE TABLE under LOCK TABLES
