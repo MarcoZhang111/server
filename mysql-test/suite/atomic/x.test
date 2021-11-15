@@ -5,7 +5,7 @@ alter table t2 force, algorithm=copy;
 create table t1 (x int);
 create or replace table t1 (y int);
 show create table t1;
-set @@default_storage_engine= myisam;
+set @@default_storage_engine= aria;
 create or replace table t1 like t2;
 show create table t1;
 create or replace table t1 select * from t2;

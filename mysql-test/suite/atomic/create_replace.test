@@ -22,6 +22,7 @@ if ($MTR_COMBINATION_ARIA)
 if ($MTR_COMBINATION_ARIA_NOTRANS)
 {
   let $default_engine=Aria;
+  # FIXME: extra option not used
   let $extra_option=transactional=0;
 }
 if ($MTR_COMBINATION_EXPENSIVE_RENAME)
@@ -76,15 +77,15 @@ let $crash_points='ddl_log_replace_after_log_rename',
                   'ddl_log_replace_after_remove_backup';
 
 #let $crash_count=1;
-#let $crash_points='ddl_log_create_after_send_data';
+#let $crash_points='ddl_log_replace_after_remove_backup';
 
-let $statement_count=2;
+let $statement_count=3;
 let $statements='CREATE OR REPLACE TABLE t1 (new int)',
                 'CREATE OR REPLACE TABLE t1 LIKE const_table',
                 'CREATE OR REPLACE TABLE t1 SELECT * from const_table';
 
 #let $statement_count=1;
-#let $statements='CREATE OR REPLACE TABLE t1 LIKE const_table';
+#let $statements='CREATE OR REPLACE TABLE t1 SELECT * from const_table';
 
 # FIXME: const_table for several engines?
 create table const_table (new int, b int) engine=myisam;

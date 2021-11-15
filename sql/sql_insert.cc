@@ -4533,6 +4533,29 @@ TABLE *select_create::create_table_from_items(THD *thd, List<Item> *items,
       create_table->table= thd->create_and_open_tmp_table(&frm, tmp_path, orig_table->db.str,
                                                           orig_table->table_name.str, true);
       /* NOTE: if create_and_open_tmp_table() fails the table is dropped by ddl_log_state_create */
+      if (create_table->table)
+      {
+        /*
+          Turn off recovery logging since rollback of create table is to
+          delete the new table so there is no need to log the changes to it.
+
+          This needs to be done before external_lock.
+        */
+        if (ha_enable_transaction(thd, false))
+        {
+          create_table->table= 0;
+          goto err;
+        }
+
+        if (create_table->table->file->ha_external_lock(thd, F_WRLCK))
+        {
+          // FIXME: test
+          /* Undo call to mysql_trans_prepare_alter_copy_data() */
+          ha_enable_transaction(thd, true);
+          create_table->table= 0;
+          goto err;
+        }
+      }
     }
     else if (!create_info->tmp_table())
     {
@@ -4577,6 +4600,7 @@ TABLE *select_create::create_table_from_items(THD *thd, List<Item> *items,
   else
     create_table->table= 0;                     // Create failed
 
+err:
   DBUG_ASSERT(frm.str || !atomic_replace);
   my_free(const_cast<uchar*>(frm.str));
   
@@ -5054,7 +5078,9 @@ bool select_create::send_eof()
     DBUG_ASSERT(table->s->tmp_table);
 
     int result;
-    if (mysql_trans_commit_alter_copy_data(thd))
+    // FIXME: do this in abort_result_set()
+    if (table->file->ha_external_lock(thd, F_UNLCK) ||
+        mysql_trans_commit_alter_copy_data(thd))
     {
       abort_result_set();
       DBUG_RETURN(true);
