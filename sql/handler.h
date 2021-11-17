@@ -2432,7 +2432,7 @@ struct HA_CREATE_INFO: public Table_scope_and_contents_source_st,
   }
   bool ok_atomic_replace() const
   {
-    return !(db_type->flags & HTON_EXPENSIVE_RENAME) &&
+    return !tmp_table() && !(db_type->flags & HTON_EXPENSIVE_RENAME) &&
       DBUG_EVALUATE_IF("ddl_log_expensive_rename", false, true);
   }
 };

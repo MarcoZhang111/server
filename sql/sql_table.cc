@@ -4783,37 +4783,15 @@ bool mysql_create_table(THD *thd, TABLE_LIST *create_table,
 
   if (atomic_replace)
   {
-    // FIXME: what if handle_table_exists() returns true and result==0?
+    create_info->table= orig_table->table;
     if (create_table_exists(thd, &ddl_log_state_create, &ddl_log_state_rm, orig_table->db,
                             orig_table->table_name, &new_table, *create_info, create_info, result))
-      goto err;
-    create_table= orig_table;
-  }
-
-  /*
-    Check if we are doing CREATE OR REPLACE TABLE under LOCK TABLES
-    on a non temporary table
-  */
-  if (thd->locked_tables_mode && pos_in_locked_tables &&
-      create_info->or_replace())
-  {
-    DBUG_ASSERT(thd->variables.option_bits & OPTION_TABLE_LOCK);
-    /*
-      Add back the deleted table and re-created table as a locked table
-      This should always work as we have a meta lock on the table.
-     */
-    thd->locked_tables_list.add_back_last_deleted_lock(pos_in_locked_tables);
-    if (thd->locked_tables_list.reopen_tables(thd, false))
     {
-      thd->locked_tables_list.unlink_all_closed_tables(thd, NULL, 0);
       result= 1;
       goto err;
     }
-    else
-    {
-      TABLE *table= pos_in_locked_tables->table;
-      table->mdl_ticket->downgrade_lock(MDL_SHARED_NO_READ_WRITE);
-    }
+    create_table= orig_table;
+    create_info->table= 0;
   }
 
 err:
@@ -4849,7 +4827,10 @@ err:
         we should log a delete of it.
         If create_info->table was not set, it's a normal table and
         table_creation_was_logged will be set when the share is created.
+
+        NOTE: this is only needed for non-atomic CREATE OR REPLACE
       */
+      DBUG_ASSERT(!atomic_replace);
       create_info->table->s->table_creation_was_logged= 1;
     }
     thd->binlog_xid= thd->query_id;
@@ -4878,10 +4859,7 @@ err:
   }
   if (result)
   {
-    if (ddl_log_state_rm.is_active())
-      result|= ddl_log_revert(thd, &ddl_log_state_create);
-    else
-      ddl_log_complete(&ddl_log_state_create);
+    (void) ddl_log_revert(thd, &ddl_log_state_create);
     ddl_log_complete(&ddl_log_state_rm);
   }
   else
@@ -4903,6 +4881,33 @@ err:
     result|= ddl_log_revert(thd, &ddl_log_state_rm);
     debug_crash_here("ddl_log_replace_after_remove_backup");
   }
+
+  /*
+    Check if we are doing CREATE OR REPLACE TABLE under LOCK TABLES
+    on a non temporary table
+  */
+  if (thd->locked_tables_mode && pos_in_locked_tables &&
+      create_info->or_replace())
+  {
+    DBUG_ASSERT(thd->variables.option_bits & OPTION_TABLE_LOCK);
+    /*
+      Add back the deleted table and re-created table as a locked table
+      This should always work as we have a meta lock on the table.
+     */
+    thd->locked_tables_list.add_back_last_deleted_lock(pos_in_locked_tables);
+    if (thd->locked_tables_list.reopen_tables(thd, false))
+    {
+      thd->locked_tables_list.unlink_all_closed_tables(thd, NULL, 0);
+      result= 1;
+      goto err;
+    }
+    else
+    {
+      TABLE *table= pos_in_locked_tables->table;
+      table->mdl_ticket->downgrade_lock(MDL_SHARED_NO_READ_WRITE);
+    }
+  }
+
   DBUG_RETURN(result);
 }
 
@@ -5339,54 +5344,13 @@ bool mysql_create_like_table(THD* thd, TABLE_LIST* table,
 
   if (atomic_replace)
   {
-    // FIXME: what if handle_table_exists() returns true and result==0?
+    local_create_info.table= orig_table->table;
     if (create_table_exists(thd, &ddl_log_state_create, &ddl_log_state_rm, orig_table->db,
                             orig_table->table_name, &new_table, local_create_info,
                             &local_create_info, res))
       goto err;
+    local_create_info.table= 0;
     table= orig_table;
-  }
-
-  /*
-    Check if we are doing CREATE OR REPLACE TABLE under LOCK TABLES
-    on a non temporary table
-  */
-  if (thd->locked_tables_mode && pos_in_locked_tables &&
-      create_info->or_replace())
-  {
-    /*
-      Add back the deleted table and re-created table as a locked table
-      This should always work as we have a meta lock on the table.
-     */
-    thd->locked_tables_list.add_back_last_deleted_lock(pos_in_locked_tables);
-    if (thd->locked_tables_list.reopen_tables(thd, false))
-    {
-      thd->locked_tables_list.unlink_all_closed_tables(thd, NULL, 0);
-      res= 1;                                   // We got an error
-    }
-    else
-    {
-      /*
-        Get pointer to the newly opened table. We need this to ensure we
-        don't reopen the table when doing statment logging below.
-      */
-      table->table= pos_in_locked_tables->table;
-      table->table->mdl_ticket->downgrade_lock(MDL_SHARED_NO_READ_WRITE);
-    }
-  }
-  else
-  {
-    /*
-      Ensure that we have an exclusive lock on target table if we are creating
-      non-temporary table. We don't have or need the lock if the create failed
-      because of existing table when using "if exists".
-    */
-    DBUG_ASSERT((create_info->tmp_table()) || create_res < 0 ||
-                thd->mdl_context.is_lock_owner(MDL_key::TABLE, table->db.str,
-                                               table->table_name.str,
-                                               MDL_EXCLUSIVE) ||
-                (thd->locked_tables_mode && pos_in_locked_tables &&
-                 create_info->if_not_exists()));
   }
 
   DEBUG_SYNC(thd, "create_table_like_before_binlog");
@@ -5540,7 +5504,10 @@ bool mysql_create_like_table(THD* thd, TABLE_LIST* table,
         /*
           Remember that tmp table creation was logged so that we know if
           we should log a delete of it.
+
+          NOTE: this is only needed for non-atomic CREATE OR REPLACE
         */
+        DBUG_ASSERT(!atomic_replace);
         local_create_info.table->s->table_creation_was_logged= 1;
       }
     }
@@ -5607,6 +5574,49 @@ err:
       res= 1;
     debug_crash_here("ddl_log_replace_after_remove_backup");
   }
+
+  /*
+    Check if we are doing CREATE OR REPLACE TABLE under LOCK TABLES
+    on a non temporary table
+  */
+  if (thd->locked_tables_mode && pos_in_locked_tables &&
+      create_info->or_replace())
+  {
+    /*
+      Add back the deleted table and re-created table as a locked table
+      This should always work as we have a meta lock on the table.
+     */
+    thd->locked_tables_list.add_back_last_deleted_lock(pos_in_locked_tables);
+    if (thd->locked_tables_list.reopen_tables(thd, false))
+    {
+      thd->locked_tables_list.unlink_all_closed_tables(thd, NULL, 0);
+      res= 1;                                   // We got an error
+    }
+    else
+    {
+      /*
+        Get pointer to the newly opened table. We need this to ensure we
+        don't reopen the table when doing statment logging below.
+      */
+      table->table= pos_in_locked_tables->table;
+      table->table->mdl_ticket->downgrade_lock(MDL_SHARED_NO_READ_WRITE);
+    }
+  }
+  else
+  {
+    /*
+      Ensure that we have an exclusive lock on target table if we are creating
+      non-temporary table. We don't have or need the lock if the create failed
+      because of existing table when using "if exists".
+    */
+    DBUG_ASSERT((create_info->tmp_table()) || create_res < 0 ||
+                thd->mdl_context.is_lock_owner(MDL_key::TABLE, table->db.str,
+                                               table->table_name.str,
+                                               MDL_EXCLUSIVE) ||
+                (thd->locked_tables_mode && pos_in_locked_tables &&
+                 create_info->if_not_exists()));
+  }
+
   DBUG_RETURN(res != 0);
 }
 

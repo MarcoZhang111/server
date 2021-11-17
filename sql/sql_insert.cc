@@ -4780,6 +4780,7 @@ select_create::prepare(List<Item> &_values, SELECT_LEX_UNIT *u)
   {
     if (create_info->or_replace())
     {
+      // FIXME: atomic replace
       /* Original table was deleted. We have to log it */
       log_drop_table(thd, &create_table->db, &create_table->table_name,
                      &create_info->org_storage_engine_name,
@@ -4794,7 +4795,7 @@ select_create::prepare(List<Item> &_values, SELECT_LEX_UNIT *u)
 
   DBUG_ASSERT(table == create_table->table);
 
-  if (table->s->tmp_table)
+  if (orig_table->table->s->tmp_table)
   {
     /*
       When the temporary table was created & opened in create_table_impl(),
@@ -5026,7 +5027,7 @@ bool select_create::send_eof()
     is in select_insert::prepare_eof(). For that reason, we
     mark the flag at this point.
   */
-  if (table->s->tmp_table && !atomic_replace)
+  if (orig_table->table->s->tmp_table)
     thd->transaction->stmt.mark_created_temp_table();
 
   if (thd->slave_thread)
@@ -5034,7 +5035,7 @@ bool select_create::send_eof()
 
   debug_crash_here("ddl_log_create_before_binlog");
 
-  if (!thd->binlog_xid && !table->s->tmp_table)
+  if (!thd->binlog_xid && !orig_table->table->s->tmp_table)
   {
     thd->binlog_xid= thd->query_id;
     /* Remember xid's for the case of row based logging */
@@ -5051,17 +5052,17 @@ bool select_create::send_eof()
   }
   debug_crash_here("ddl_log_create_after_prepare_eof");
 
-  if (table->s->tmp_table)
+  if (orig_table->table->s->tmp_table)
   {
     /*
       Now is good time to add the new table to THD temporary tables list.
       But, before that we need to check if same table got created by the sub-
       statement.
     */
-    if (thd->find_tmp_table_share(table->s->table_cache_key.str,
-                                  table->s->table_cache_key.length))
+    if (thd->find_tmp_table_share(orig_table->table->s->table_cache_key.str,
+                                  orig_table->table->s->table_cache_key.length))
     {
-      my_error(ER_TABLE_EXISTS_ERROR, MYF(0), table->alias.c_ptr());
+      my_error(ER_TABLE_EXISTS_ERROR, MYF(0), orig_table->table->alias.c_ptr());
       abort_result_set();
       DBUG_RETURN(true);
     }
@@ -5086,16 +5087,16 @@ bool select_create::send_eof()
       DBUG_RETURN(true);
     }
 
-    if (!create_table_exists(thd, &ddl_log_state_create, &ddl_log_state_rm, orig_table->db,
-                             orig_table->table_name, &new_table, *create_info, create_info, result))
-    {
-    }
-    else if (result) // FIXME: is it right?
+    create_info->table= orig_table->table;
+    if (create_table_exists(thd, &ddl_log_state_create, &ddl_log_state_rm, orig_table->db,
+                            orig_table->table_name, &new_table, *create_info, create_info, result))
     {
       abort_result_set();
       DBUG_RETURN(true);
     }
     create_table= orig_table;
+    create_info->table= NULL;
+    table= NULL;
   }
 
 
@@ -5104,11 +5105,11 @@ bool select_create::send_eof()
     tables.  This can fail, but we should unlock the table
     nevertheless.
   */
-  if (!table->s->tmp_table || atomic_replace)
+  if (!create_info->tmp_table())
   {
 #ifdef WITH_WSREP
     if (WSREP(thd) &&
-        table->file->ht->db_type == DB_TYPE_INNODB)
+        create_info->db_type->db_type == DB_TYPE_INNODB)
     {
       if (thd->wsrep_trx_id() == WSREP_UNDEFINED_TRX_ID)
       {
@@ -5196,19 +5197,11 @@ bool select_create::send_eof()
   debug_crash_here("ddl_log_replace_after_remove_backup");
   debug_crash_here("ddl_log_create_log_complete");
 
-  if (atomic_replace)
-  {
-    thd->drop_temporary_table(table, NULL, false);
-    table= NULL;
-  }
-
   /*
     exit_done must only be set after last potential call to
     abort_result_set().
   */
   exit_done= 1;                                 // Avoid double calls
-
-  send_ok_packet();
 
   if (m_plock)
   {
@@ -5231,12 +5224,37 @@ bool select_create::send_eof()
                                                 create_info->
                                                 pos_in_locked_tables,
                                                 table, lock))
+      {
+        send_ok_packet();
         DBUG_RETURN(false);                     // ok
+      }
       /* Fail. Continue without locking the table */
     }
     mysql_unlock_tables(thd, lock);
   }
+  else if (atomic_replace && thd->locked_tables_mode)
+  {
+    TABLE_LIST *pos_in_locked_tables= create_info->pos_in_locked_tables;
+    DBUG_ASSERT(pos_in_locked_tables);
+    DBUG_ASSERT(thd->variables.option_bits & OPTION_TABLE_LOCK);
+    /*
+      Add back the deleted table and re-created table as a locked table
+      This should always work as we have a meta lock on the table.
+     */
+    thd->locked_tables_list.add_back_last_deleted_lock(pos_in_locked_tables);
+    if (thd->locked_tables_list.reopen_tables(thd, false))
+    {
+      thd->locked_tables_list.unlink_all_closed_tables(thd, NULL, 0);
+      DBUG_RETURN(true);
+    }
+    else
+    {
+      TABLE *table= pos_in_locked_tables->table;
+      table->mdl_ticket->downgrade_lock(MDL_SHARED_NO_READ_WRITE);
+    }
+  }
 
+  send_ok_packet();
   DBUG_RETURN(false);
 }
 
