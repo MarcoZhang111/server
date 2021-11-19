@@ -5032,6 +5032,28 @@ bool select_create::send_eof()
   if (thd->slave_thread)
     thd->variables.binlog_annotate_row_events= 0;
 
+  if (atomic_replace)
+  {
+    DBUG_ASSERT(table->s->tmp_table);
+
+    int result;
+    // FIXME: do this in abort_result_set()
+    if (table->file->ha_external_lock(thd, F_UNLCK) ||
+        ha_enable_transaction(thd, true))
+    {
+      abort_result_set();
+      DBUG_RETURN(true);
+    }
+
+    create_info->table= orig_table->table;
+    if (create_table_exists(thd, &ddl_log_state_create, &ddl_log_state_rm, orig_table->db,
+                            orig_table->table_name, &new_table, *create_info, create_info, result))
+    {
+      abort_result_set();
+      DBUG_RETURN(true);
+    }
+  }
+
   debug_crash_here("ddl_log_create_before_binlog");
 
   if (!thd->binlog_xid && !create_info->tmp_table())
@@ -5071,28 +5093,8 @@ bool select_create::send_eof()
       thd->restore_tmp_table_share(saved_tmp_table_share);
     }
   }
-
-
-  if (atomic_replace)
+  else if (atomic_replace)
   {
-    DBUG_ASSERT(table->s->tmp_table);
-
-    int result;
-    // FIXME: do this in abort_result_set()
-    if (table->file->ha_external_lock(thd, F_UNLCK) ||
-        mysql_trans_commit_alter_copy_data(thd))
-    {
-      abort_result_set();
-      DBUG_RETURN(true);
-    }
-
-    create_info->table= orig_table->table;
-    if (create_table_exists(thd, &ddl_log_state_create, &ddl_log_state_rm, orig_table->db,
-                            orig_table->table_name, &new_table, *create_info, create_info, result))
-    {
-      abort_result_set();
-      DBUG_RETURN(true);
-    }
     create_table= orig_table;
     create_info->table= NULL;
     thd->drop_temporary_table(table, NULL, false);

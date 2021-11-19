@@ -4224,16 +4224,20 @@ bool create_table_exists(THD *thd,
     if (check_if_log_table(&table_list, TRUE, "CREATE OR REPLACE"))
       return true;
 
-    if (atomic_replace &&
-        handle_atomic_replace(thd, ddl_log_state_create, ddl_log_state_rm, db,
-                              table_name, tmp_name, options, create_info))
-      return true;
-
-    /*
-      Rollback the empty transaction started in mysql_create_table()
-      call to open_and_lock_tables() when we are using LOCK TABLES.
-    */
-    (void) trans_rollback_stmt(thd);
+    if (atomic_replace)
+    {
+      if (handle_atomic_replace(thd, ddl_log_state_create, ddl_log_state_rm, db,
+                                table_name, tmp_name, options, create_info))
+        return true;
+    }
+    else
+    {
+      /*
+        Rollback the empty transaction started in mysql_create_table()
+        call to open_and_lock_tables() when we are using LOCK TABLES.
+      */
+      (void) trans_rollback_stmt(thd);
+    }
     /* Remove normal table without logging. Keep tables locked */
     if (mysql_rm_table_no_locks(thd, &table_list, &thd->db,
                                 ddl_log_state_rm,
