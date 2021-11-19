@@ -4407,7 +4407,7 @@ TABLE *select_create::create_table_from_items(THD *thd, List<Item> *items,
   List_iterator_fast<Item> it(*items);
   Item *item;
   bool save_table_creation_was_logged;
-  int create_table_mode= C_ORDINARY_CREATE;
+  int create_table_mode= CREATE_ORDINARY;
   LEX_CUSTRING frm= {0, 0};
   DBUG_ENTER("select_create::create_table_from_items");
 
@@ -4484,8 +4484,7 @@ TABLE *select_create::create_table_from_items(THD *thd, List<Item> *items,
     DBUG_ASSERT(!create_info->tmp_table()); // FIXME: test
     if (make_tmp_name(thd, "create", create_table, &new_table))
       DBUG_RETURN(NULL);
-    DBUG_ASSERT(create_table_mode == C_ORDINARY_CREATE);
-    create_table_mode= C_ALTER_TABLE;
+    create_table_mode|= CREATE_TMP_TABLE;
     DBUG_ASSERT(!(create_info->options & HA_CREATE_TMP_ALTER));
     // FIXME: restore options?
     create_info->options|= HA_CREATE_TMP_ALTER;
@@ -4514,7 +4513,7 @@ TABLE *select_create::create_table_from_items(THD *thd, List<Item> *items,
                                   &create_table->db,
                                   &create_table->table_name,
                                   create_info, alter_info, NULL,
-                                  C_ORDINARY_CREATE, create_table, atomic_replace ? &frm : NULL))
+                                  CREATE_ORDINARY, create_table, atomic_replace ? &frm : NULL))
   {
     DEBUG_SYNC(thd,"create_table_select_before_open");
 
@@ -4601,7 +4600,7 @@ TABLE *select_create::create_table_from_items(THD *thd, List<Item> *items,
     create_table->table= 0;                     // Create failed
 
 err:
-  DBUG_ASSERT(frm.str || !atomic_replace);
+  DBUG_ASSERT(!create_table->table || frm.str || !atomic_replace);
   my_free(const_cast<uchar*>(frm.str));
   
   if (unlikely(!(table= create_table->table)))
@@ -4795,7 +4794,7 @@ select_create::prepare(List<Item> &_values, SELECT_LEX_UNIT *u)
 
   DBUG_ASSERT(table == create_table->table);
 
-  if (orig_table->table->s->tmp_table)
+  if (create_info->tmp_table())
   {
     /*
       When the temporary table was created & opened in create_table_impl(),
@@ -5027,7 +5026,7 @@ bool select_create::send_eof()
     is in select_insert::prepare_eof(). For that reason, we
     mark the flag at this point.
   */
-  if (orig_table->table->s->tmp_table)
+  if (create_info->tmp_table())
     thd->transaction->stmt.mark_created_temp_table();
 
   if (thd->slave_thread)
@@ -5035,7 +5034,7 @@ bool select_create::send_eof()
 
   debug_crash_here("ddl_log_create_before_binlog");
 
-  if (!thd->binlog_xid && !orig_table->table->s->tmp_table)
+  if (!thd->binlog_xid && !create_info->tmp_table())
   {
     thd->binlog_xid= thd->query_id;
     /* Remember xid's for the case of row based logging */
@@ -5052,17 +5051,17 @@ bool select_create::send_eof()
   }
   debug_crash_here("ddl_log_create_after_prepare_eof");
 
-  if (orig_table->table->s->tmp_table)
+  if (create_info->tmp_table())
   {
     /*
       Now is good time to add the new table to THD temporary tables list.
       But, before that we need to check if same table got created by the sub-
       statement.
     */
-    if (thd->find_tmp_table_share(orig_table->table->s->table_cache_key.str,
-                                  orig_table->table->s->table_cache_key.length))
+    if (thd->find_tmp_table_share(table->s->table_cache_key.str,
+                                  table->s->table_cache_key.length))
     {
-      my_error(ER_TABLE_EXISTS_ERROR, MYF(0), orig_table->table->alias.c_ptr());
+      my_error(ER_TABLE_EXISTS_ERROR, MYF(0), table->alias.c_ptr());
       abort_result_set();
       DBUG_RETURN(true);
     }
@@ -5096,6 +5095,7 @@ bool select_create::send_eof()
     }
     create_table= orig_table;
     create_info->table= NULL;
+    thd->drop_temporary_table(table, NULL, false);
     table= NULL;
   }
 
@@ -5232,11 +5232,11 @@ bool select_create::send_eof()
     }
     mysql_unlock_tables(thd, lock);
   }
-  else if (atomic_replace && thd->locked_tables_mode)
+  else if (atomic_replace && create_info->pos_in_locked_tables)
   {
-    TABLE_LIST *pos_in_locked_tables= create_info->pos_in_locked_tables;
-    DBUG_ASSERT(pos_in_locked_tables);
+    DBUG_ASSERT(thd->locked_tables_mode);
     DBUG_ASSERT(thd->variables.option_bits & OPTION_TABLE_LOCK);
+    TABLE_LIST *pos_in_locked_tables= create_info->pos_in_locked_tables;
     /*
       Add back the deleted table and re-created table as a locked table
       This should always work as we have a meta lock on the table.
@@ -5305,14 +5305,15 @@ void select_create::abort_result_set()
   }
   if (table)
   {
-    bool tmp_table= table->s->tmp_table;
+    bool tmp_table= create_info->tmp_table();
     if (tmp_table)
     {
       DBUG_ASSERT(saved_tmp_table_share);
       thd->restore_tmp_table_share(saved_tmp_table_share);
-      if (atomic_replace)
-        create_table= &new_table;
     }
+    else if (atomic_replace)
+      create_table= &new_table;
+
 
     if (table->file->inited &&
         (info.ignore || info.handle_duplicates != DUP_ERROR) &&
@@ -5329,7 +5330,14 @@ void select_create::abort_result_set()
       m_plock= NULL;
     }
 
-    drop_open_table(thd, table, &create_table->db, &create_table->table_name);
+    if (atomic_replace)
+    {
+      (void) table->file->ha_external_lock(thd, F_UNLCK);
+      (void) mysql_trans_commit_alter_copy_data(thd);
+      (void) thd->drop_temporary_table(table, NULL, false);
+    }
+    else
+      drop_open_table(thd, table, &create_table->db, &create_table->table_name);
     table=0;                                    // Safety
     if (thd->log_current_statement)
     {

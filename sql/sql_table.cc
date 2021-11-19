@@ -732,7 +732,7 @@ bool mysql_write_frm(ALTER_PARTITION_PARAM_TYPE *lpt, uint flags)
     if (mysql_prepare_create_table(lpt->thd, lpt->create_info, lpt->alter_info,
                                    &lpt->db_options, lpt->table->file,
                                    &lpt->key_info_buffer, &lpt->key_count,
-                                   C_ALTER_TABLE, lpt->db, lpt->table_name))
+                                   CREATE_TMP_TABLE, lpt->db, lpt->table_name))
     {
       DBUG_RETURN(TRUE);
     }
@@ -2618,7 +2618,7 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
   List_iterator_fast<Create_field> it(alter_info->create_list);
   List_iterator<Create_field> it2(alter_info->create_list);
   uint total_uneven_bit_length= 0;
-  bool tmp_table= create_table_mode == C_ALTER_TABLE;
+  bool tmp_table= (create_table_mode & CREATE_TMP_TABLE);
   const bool create_simple= thd->lex->create_simple();
   bool is_hash_field_needed= false;
   const Column_derived_attributes dattr(create_info->default_table_charset);
@@ -4338,8 +4338,8 @@ int create_table_impl(THD *thd,
   LEX_CSTRING	*alias;
   handler	*file= 0;
   int		error= 1;
-  bool          frm_only= create_table_mode == C_ALTER_TABLE_FRM_ONLY;
-  bool          internal_tmp_table= create_table_mode == C_ALTER_TABLE || frm_only;
+  bool          frm_only= (create_table_mode & CREATE_FRM_ONLY);
+  bool          internal_tmp_table= (create_table_mode & CREATE_TMP_TABLE) || frm_only;
   DBUG_ENTER("create_table_impl");
   DBUG_PRINT("enter", ("db: '%s'  table: '%s'  tmp: %d  path: %s",
                        db.str, table_name.str, internal_tmp_table, path.str));
@@ -4449,7 +4449,7 @@ int create_table_impl(THD *thd,
   if (check_engine(thd, orig_db.str, orig_table_name.str, create_info))
     goto err;
 
-  if (create_table_mode == C_ASSISTED_DISCOVERY)
+  if (create_table_mode & CREATE_ASSISTED)
   {
     /* check that it's used correctly */
     DBUG_ASSERT(alter_info->create_list.elements == 0);
@@ -4745,9 +4745,9 @@ bool mysql_create_table(THD *thd, TABLE_LIST *create_table,
   DEBUG_SYNC(thd, "locked_table_name");
 
   if (alter_info->create_list.elements || alter_info->key_list.elements)
-    create_table_mode= C_ORDINARY_CREATE;
+    create_table_mode= CREATE_ORDINARY;
   else
-    create_table_mode= C_ASSISTED_DISCOVERY;
+    create_table_mode= CREATE_ASSISTED;
 
   if (!opt_explicit_defaults_for_timestamp)
     promote_first_timestamp_column(&alter_info->create_list);
@@ -4762,8 +4762,7 @@ bool mysql_create_table(THD *thd, TABLE_LIST *create_table,
       result= 1;
       goto err;
     }
-    DBUG_ASSERT(create_table_mode == C_ORDINARY_CREATE);
-    create_table_mode= C_ALTER_TABLE;
+    create_table_mode|= CREATE_TMP_TABLE;
     DBUG_ASSERT(!(create_info->options & HA_CREATE_TMP_ALTER));
     // FIXME: restore options?
     create_info->options|= HA_CREATE_TMP_ALTER;
@@ -5217,7 +5216,7 @@ bool mysql_create_like_table(THD* thd, TABLE_LIST* table,
   TABLE_LIST new_table;
   TABLE_LIST *orig_table= table;
   const bool atomic_replace= create_info->is_atomic_replace();
-  int create_table_mode= C_ORDINARY_CREATE;
+  int create_table_mode= CREATE_ORDINARY;
   DBUG_ENTER("mysql_create_like_table");
 
   bzero(&ddl_log_state_create, sizeof(ddl_log_state_create));
@@ -5322,8 +5321,7 @@ bool mysql_create_like_table(THD* thd, TABLE_LIST* table,
     {
       goto err;
     }
-    DBUG_ASSERT(create_table_mode == C_ORDINARY_CREATE);
-    create_table_mode= C_ALTER_TABLE;
+    create_table_mode|= CREATE_TMP_TABLE;
     DBUG_ASSERT(!(create_info->options & HA_CREATE_TMP_ALTER));
     // FIXME: restore options?
     create_info->options|= HA_CREATE_TMP_ALTER;
@@ -5602,7 +5600,7 @@ err:
       table->table->mdl_ticket->downgrade_lock(MDL_SHARED_NO_READ_WRITE);
     }
   }
-  else
+  else if (!res)
   {
     /*
       Ensure that we have an exclusive lock on target table if we are creating
@@ -7083,7 +7081,7 @@ bool mysql_compare_tables(TABLE *table,
 
   /* Create the prepared information. */
   int create_table_mode= table->s->tmp_table == NO_TMP_TABLE ?
-                           C_ORDINARY_CREATE : C_ALTER_TABLE;
+                           CREATE_ORDINARY : CREATE_TMP_TABLE;
   if (mysql_prepare_create_table(thd, create_info, &tmp_alter_info,
                                  &db_options, table->file, &key_info_buffer,
                                  &key_count, create_table_mode, db, table_name))
@@ -10253,7 +10251,7 @@ do_continue:;
                            alter_ctx.new_db, alter_ctx.tmp_name,
                            alter_ctx.get_tmp_cstring_path(),
                            thd->lex->create_info, create_info, alter_info,
-                           C_ALTER_TABLE_FRM_ONLY, NULL,
+                           CREATE_FRM_ONLY, NULL,
                            &key_info, &key_count, &frm);
   reenable_binlog(thd);
 

@@ -227,10 +227,10 @@ create or replace table mysqltest2.t2;
 --sorted_result
 select * from information_schema.metadata_lock_info
 where table_name not like 'innodb_%_stats';
+drop table mysqltest2.t2;
 drop table t1;
 create table t1 (i int);
 drop table t1;
-drop table mysqltest2.t2;
 
 create table test.t1 (i int);
 create table mysqltest2.t2 like test.t1;
@@ -252,10 +252,10 @@ create or replace table mysqltest2.t2 (a int) select 1 as 'a', 2 as 'a';
 --sorted_result
 select * from information_schema.metadata_lock_info
 where table_name not like 'innodb_%_stats';
+drop table mysqltest2.t2;
 drop table t1;
 create table t1 (i int);
 drop table t1;
-drop table mysqltest2.t2;
 
 create table test.t1 (i int) engine=innodb;
 create table mysqltest2.t2 like test.t1;
@@ -540,28 +540,32 @@ show open tables like 't2';
 unlock tables;
 --echo # SP
 --delimiter $
-create or replace procedure sp()
+create or replace procedure sp(n int)
 begin
+  select concat('sp call ', n, ':') as '';
   show open tables like 't2';
   create or replace table t2 (y int);
-  select 't2 is removed from prelocked:' as '';
+  select 'create or replace table t2 (y int);' as '';
   show open tables like 't2';
-  select 'but it is ok, it can be opened again:' as '';
   insert into t2 values (2);
+  select 'insert into t2 values (2);' as '';
   show open tables like 't2';
   create or replace table t2 like t1;
+  select 'create or replace table t2 like t1;' as '';
   show open tables like 't2';
   create or replace table t2 (y int) as select * from t1;
+  select 'create or replace table t2 (y int) as select * from t1;' as '';
   show open tables like 't2';
+  select 'select * from t2;' as '';
   select * from t2;
   show open tables  like 't2';
 end $
 --delimiter ;
 flush tables;
-call sp; call sp;
+call sp(1); call sp(2);
 --echo # SP under LOCK TABLES
 lock tables t2 write, t1 write;
-call sp; call sp;
+call sp(3); call sp(4);
 unlock tables;
 drop procedure sp;
 drop tables t1, t2, t3;

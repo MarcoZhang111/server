@@ -281,15 +281,22 @@ THREAD_ID	LOCK_MODE	LOCK_DURATION	LOCK_TYPE	TABLE_SCHEMA	TABLE_NAME
 #	MDL_INTENTION_EXCLUSIVE	NULL	Schema metadata lock	mysqltest2	
 #	MDL_INTENTION_EXCLUSIVE	NULL	Schema metadata lock	test	
 #	MDL_SHARED_NO_READ_WRITE	NULL	Table metadata lock	mysqltest2	t2
+#	MDL_SHARED_NO_READ_WRITE	NULL	Table metadata lock	test	t1
 create or replace table mysqltest2.t2;
 ERROR 42000: A table must have at least 1 column
 select * from information_schema.metadata_lock_info
 where table_name not like 'innodb_%_stats';
 THREAD_ID	LOCK_MODE	LOCK_DURATION	LOCK_TYPE	TABLE_SCHEMA	TABLE_NAME
+#	MDL_BACKUP_DDL	NULL	Backup lock		
+#	MDL_BACKUP_DML	NULL	Backup lock		
+#	MDL_INTENTION_EXCLUSIVE	NULL	Schema metadata lock	mysqltest2	
+#	MDL_INTENTION_EXCLUSIVE	NULL	Schema metadata lock	test	
+#	MDL_SHARED_NO_READ_WRITE	NULL	Table metadata lock	mysqltest2	t2
+#	MDL_SHARED_NO_READ_WRITE	NULL	Table metadata lock	test	t1
+drop table mysqltest2.t2;
 drop table t1;
 create table t1 (i int);
 drop table t1;
-drop table mysqltest2.t2;
 create table test.t1 (i int);
 create table mysqltest2.t2 like test.t1;
 lock table test.t1 write, mysqltest2.t2 write;
@@ -316,15 +323,22 @@ THREAD_ID	LOCK_MODE	LOCK_DURATION	LOCK_TYPE	TABLE_SCHEMA	TABLE_NAME
 #	MDL_INTENTION_EXCLUSIVE	NULL	Schema metadata lock	mysqltest2	
 #	MDL_INTENTION_EXCLUSIVE	NULL	Schema metadata lock	test	
 #	MDL_SHARED_NO_READ_WRITE	NULL	Table metadata lock	mysqltest2	t2
+#	MDL_SHARED_NO_READ_WRITE	NULL	Table metadata lock	test	t1
 create or replace table mysqltest2.t2 (a int) select 1 as 'a', 2 as 'a';
 ERROR 42S21: Duplicate column name 'a'
 select * from information_schema.metadata_lock_info
 where table_name not like 'innodb_%_stats';
 THREAD_ID	LOCK_MODE	LOCK_DURATION	LOCK_TYPE	TABLE_SCHEMA	TABLE_NAME
+#	MDL_BACKUP_DDL	NULL	Backup lock		
+#	MDL_BACKUP_DML	NULL	Backup lock		
+#	MDL_INTENTION_EXCLUSIVE	NULL	Schema metadata lock	mysqltest2	
+#	MDL_INTENTION_EXCLUSIVE	NULL	Schema metadata lock	test	
+#	MDL_SHARED_NO_READ_WRITE	NULL	Table metadata lock	mysqltest2	t2
+#	MDL_SHARED_NO_READ_WRITE	NULL	Table metadata lock	test	t1
+drop table mysqltest2.t2;
 drop table t1;
 create table t1 (i int);
 drop table t1;
-drop table mysqltest2.t2;
 create table test.t1 (i int) engine=innodb;
 create table mysqltest2.t2 like test.t1;
 lock table test.t1 write, mysqltest2.t2 write;
@@ -623,53 +637,71 @@ Database	Table	In_use	Name_locked
 test	t2	1	0
 unlock tables;
 # SP
-create or replace procedure sp()
+create or replace procedure sp(n int)
 begin
+select concat('sp call ', n, ':') as '';
 show open tables like 't2';
 create or replace table t2 (y int);
-select 't2 is removed from prelocked:' as '';
+select 'create or replace table t2 (y int);' as '';
 show open tables like 't2';
-select 'but it is ok, it can be opened again:' as '';
 insert into t2 values (2);
+select 'insert into t2 values (2);' as '';
 show open tables like 't2';
 create or replace table t2 like t1;
+select 'create or replace table t2 like t1;' as '';
 show open tables like 't2';
 create or replace table t2 (y int) as select * from t1;
+select 'create or replace table t2 (y int) as select * from t1;' as '';
 show open tables like 't2';
+select 'select * from t2;' as '';
 select * from t2;
 show open tables  like 't2';
 end $
 flush tables;
-call sp;
+call sp(1);
+
+sp call 1:
 Database	Table	In_use	Name_locked
 
-t2 is removed from prelocked:
+create or replace table t2 (y int);
 Database	Table	In_use	Name_locked
 
-but it is ok, it can be opened again:
+insert into t2 values (2);
 Database	Table	In_use	Name_locked
 test	t2	0	0
+
+create or replace table t2 like t1;
 Database	Table	In_use	Name_locked
+
+create or replace table t2 (y int) as select * from t1;
 Database	Table	In_use	Name_locked
-test	t2	0	0
+
+select * from t2;
 y	a
 NULL	1
 NULL	1
 Database	Table	In_use	Name_locked
 test	t2	0	0
-call sp;
+call sp(2);
+
+sp call 2:
 Database	Table	In_use	Name_locked
 test	t2	0	0
 
-t2 is removed from prelocked:
+create or replace table t2 (y int);
 Database	Table	In_use	Name_locked
 
-but it is ok, it can be opened again:
+insert into t2 values (2);
 Database	Table	In_use	Name_locked
 test	t2	0	0
+
+create or replace table t2 like t1;
 Database	Table	In_use	Name_locked
+
+create or replace table t2 (y int) as select * from t1;
 Database	Table	In_use	Name_locked
-test	t2	0	0
+
+select * from t2;
 y	a
 NULL	1
 NULL	1
@@ -677,41 +709,57 @@ Database	Table	In_use	Name_locked
 test	t2	0	0
 # SP under LOCK TABLES
 lock tables t2 write, t1 write;
-call sp;
+call sp(3);
+
+sp call 3:
 Database	Table	In_use	Name_locked
 test	t2	1	0
 
-t2 is removed from prelocked:
+create or replace table t2 (y int);
 Database	Table	In_use	Name_locked
 test	t2	1	0
 
-but it is ok, it can be opened again:
+insert into t2 values (2);
 Database	Table	In_use	Name_locked
 test	t2	1	0
+
+create or replace table t2 like t1;
 Database	Table	In_use	Name_locked
 test	t2	1	0
+
+create or replace table t2 (y int) as select * from t1;
 Database	Table	In_use	Name_locked
 test	t2	1	0
+
+select * from t2;
 y	a
 NULL	1
 NULL	1
 Database	Table	In_use	Name_locked
 test	t2	1	0
-call sp;
+call sp(4);
+
+sp call 4:
 Database	Table	In_use	Name_locked
 test	t2	1	0
 
-t2 is removed from prelocked:
+create or replace table t2 (y int);
 Database	Table	In_use	Name_locked
 test	t2	1	0
 
-but it is ok, it can be opened again:
+insert into t2 values (2);
 Database	Table	In_use	Name_locked
 test	t2	1	0
+
+create or replace table t2 like t1;
 Database	Table	In_use	Name_locked
 test	t2	1	0
+
+create or replace table t2 (y int) as select * from t1;
 Database	Table	In_use	Name_locked
 test	t2	1	0
+
+select * from t2;
 y	a
 NULL	1
 NULL	1
