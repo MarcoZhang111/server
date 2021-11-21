@@ -3171,7 +3171,8 @@ handler *handler::clone(const char *name, MEM_ROOT *mem_root)
     and should be able to use the original instance of the table.
   */
   if (new_handler->ha_open(table, name, table->db_stat,
-                           HA_OPEN_IGNORE_IF_LOCKED, mem_root))
+                           HA_OPEN_IGNORE_IF_LOCKED |
+                            (table->s->tmp_table ? HA_OPEN_INTERNAL_TABLE : 0), mem_root))
     goto err;
 
   return new_handler;

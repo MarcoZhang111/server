@@ -3814,7 +3814,7 @@ select_insert::select_insert(THD *thd_arg, TABLE_LIST *table_list_par,
   table_list(table_list_par), table(table_par), fields(fields_par),
   autoinc_value_of_last_inserted_row(0),
   insert_into_view(table_list_par && table_list_par->view != 0),
-  binary_logged(false)
+  binary_logged(false), atomic_replace(false)
 {
   bzero((char*) &info,sizeof(info));
   info.handle_duplicates= duplic;
@@ -4164,7 +4164,7 @@ bool select_insert::prepare_eof()
     error= thd->get_stmt_da()->sql_errno();
 
   if (info.ignore || info.handle_duplicates != DUP_ERROR)
-      if (table->file->ha_table_flags() & HA_DUPLICATE_POS)
+      if (!atomic_replace && table->file->ha_table_flags() & HA_DUPLICATE_POS)
         table->file->ha_rnd_end();
   table->file->extra(HA_EXTRA_END_ALTER_COPY);
   table->file->extra(HA_EXTRA_NO_IGNORE_DUP_KEY);
@@ -4513,7 +4513,7 @@ TABLE *select_create::create_table_from_items(THD *thd, List<Item> *items,
                                   &create_table->db,
                                   &create_table->table_name,
                                   create_info, alter_info, NULL,
-                                  CREATE_ORDINARY, create_table, atomic_replace ? &frm : NULL))
+                                  create_table_mode, create_table, atomic_replace ? &frm : NULL))
   {
     DEBUG_SYNC(thd,"create_table_select_before_open");
 
@@ -5038,7 +5038,8 @@ bool select_create::send_eof()
 
     int result;
     // FIXME: do this in abort_result_set()
-    if (table->file->ha_external_lock(thd, F_UNLCK) ||
+    if (table->file->ha_index_or_rnd_end() ||
+        table->file->ha_external_lock(thd, F_UNLCK) ||
         ha_enable_transaction(thd, true))
     {
       abort_result_set();
