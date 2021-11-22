@@ -67,6 +67,46 @@ static ulong atoi_octal(const char *str)
 MYSQL_FILE *mysql_stdin= NULL;
 static MYSQL_FILE instrumented_stdin;
 
+#ifdef _WIN32
+static UINT orig_console_cp, orig_console_output_cp;
+
+static void reset_console_cp(void)
+{
+  SetConsoleCP(orig_console_cp);
+  SetConsoleOutputCP(orig_console_output_cp);
+}
+
+/*
+    The below fixes discrepancies in console output and
+    command line parameter encoding. command line is in
+    ANSI codepage, output to console by default is in OEM, but
+    we like them to be in the same encoding.
+
+    We do this only if current codepage is UTF8, i.e when we
+    know we're on Windows that can handle UTF8 well.
+  */
+static void setup_codepages()
+{
+  UINT acp= GetACP();
+  if (acp != CP_UTF8)
+    return;
+
+  /*
+    Use setlocale to make mbstowcs/mkdir/getcwd behave, see
+    https://docs.microsoft.com/en-us/cpp/c-runtime-library/reference/setlocale-wsetlocale
+  */
+  setlocale(LC_ALL,"en_US.UTF8");
+
+  /* We want console/terminal to be UTF8 */
+  orig_console_cp= GetConsoleCP();
+  SetConsoleCP(acp);
+  orig_console_output_cp= GetConsoleOutputCP();
+  SetConsoleOutputCP(acp);
+  atexit(reset_console_cp);
+
+}
+#endif
+
 /**
   Initialize my_sys functions, resources and variables
 
@@ -131,6 +171,7 @@ my_bool my_init(void)
 #ifdef _WIN32
     if (win32_init_tcp_ip())
       DBUG_RETURN(1);
+    setup_codepages();
 #endif
 #ifdef CHECK_UNLIKELY
     init_my_likely();
