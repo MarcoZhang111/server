@@ -4777,9 +4777,9 @@ select_create::prepare(List<Item> &_values, SELECT_LEX_UNIT *u)
 
   if (!(table= create_table_from_items(thd, &values, &extra_lock, hook_ptr)))
   {
-    if (create_info->or_replace())
+    if (create_info->or_replace() && !atomic_replace)
     {
-      // FIXME: atomic replace
+      /* TODO: why create_info->table_was_deleted not used? */
       /* Original table was deleted. We have to log it */
       log_drop_table(thd, &create_table->db, &create_table->table_name,
                      &create_info->org_storage_engine_name,
@@ -5173,7 +5173,6 @@ bool select_create::send_eof()
     /* Log query to ddl log */
     backup_log_info ddl_log;
     bzero(&ddl_log, sizeof(ddl_log));
-    ddl_log.query= { C_STRING_WITH_LEN("CREATE") };
     if ((ddl_log.org_partitioned= (create_info->db_type == partition_hton)))
       ddl_log.org_storage_engine_name= create_info->new_storage_engine_name;
     else
@@ -5182,6 +5181,12 @@ bool select_create::send_eof()
     ddl_log.org_database=   create_table->db;
     ddl_log.org_table=      create_table->table_name;
     ddl_log.org_table_id=   create_info->tabledef_version;
+    if (atomic_replace)
+    {
+      ddl_log.query= { C_STRING_WITH_LEN("DROP") };
+      backup_log_ddl(&ddl_log);
+    }
+    ddl_log.query= { C_STRING_WITH_LEN("CREATE") };
     backup_log_ddl(&ddl_log);
   }
   /*

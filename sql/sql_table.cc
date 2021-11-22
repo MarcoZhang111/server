@@ -4252,7 +4252,8 @@ bool create_table_exists(THD *thd,
     */
     thd->variables.option_bits|= OPTION_KEEP_LOG;
     thd->log_current_statement= 1;
-    create_info->table_was_deleted= 1;
+    if (!atomic_replace)
+      create_info->table_was_deleted= 1;
     lex_string_set(&create_info->org_storage_engine_name,
                     ha_resolve_storage_engine_name(db_type));
     DBUG_EXECUTE_IF("send_kill_after_delete",
@@ -4851,12 +4852,17 @@ err:
     {
       backup_log_info ddl_log;
       bzero(&ddl_log, sizeof(ddl_log));
-      ddl_log.query= { C_STRING_WITH_LEN("CREATE") };
       ddl_log.org_partitioned= (create_info->db_type == partition_hton);
       ddl_log.org_storage_engine_name= create_info->new_storage_engine_name;
       ddl_log.org_database=     create_table->db;
       ddl_log.org_table=        create_table->table_name;
       ddl_log.org_table_id=     create_info->tabledef_version;
+      if (atomic_replace)
+      {
+        ddl_log.query= { C_STRING_WITH_LEN("DROP") };
+        backup_log_ddl(&ddl_log);
+      }
+      ddl_log.query= { C_STRING_WITH_LEN("CREATE") };
       backup_log_ddl(&ddl_log);
     }
   }
@@ -5547,6 +5553,7 @@ err:
         We have to log it.
       */
       DBUG_ASSERT(ddl_log_state_rm.is_active());
+      DBUG_ASSERT(!atomic_replace);
       log_drop_table(thd, &table->db, &table->table_name,
                      &create_info->org_storage_engine_name,
                      create_info->db_type == partition_hton,
@@ -5567,11 +5574,16 @@ err:
   {
     backup_log_info ddl_log;
     bzero(&ddl_log, sizeof(ddl_log));
-    ddl_log.query= { C_STRING_WITH_LEN("CREATE") };
     ddl_log.org_storage_engine_name= local_create_info.new_storage_engine_name;
     ddl_log.org_database=     table->db;
     ddl_log.org_table=        table->table_name;
     ddl_log.org_table_id=     local_create_info.tabledef_version;
+    if (atomic_replace)
+    {
+      ddl_log.query= { C_STRING_WITH_LEN("DROP") };
+      backup_log_ddl(&ddl_log);
+    }
+    ddl_log.query= { C_STRING_WITH_LEN("CREATE") };
     backup_log_ddl(&ddl_log);
   }
 
