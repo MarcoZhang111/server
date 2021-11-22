@@ -5516,6 +5516,22 @@ bool mysql_create_like_table(THD* thd, TABLE_LIST* table,
     do_logging= TRUE;
   }
 
+  if (!(thd->locked_tables_mode && pos_in_locked_tables &&
+      create_info->or_replace()))
+  {
+    /*
+      Ensure that we have an exclusive lock on target table if we are creating
+      non-temporary table. We don't have or need the lock if the create failed
+      because of existing table when using "if exists".
+    */
+    DBUG_ASSERT((create_info->tmp_table()) || create_res < 0 ||
+                thd->mdl_context.is_lock_owner(MDL_key::TABLE, table->db.str,
+                                               table->table_name.str,
+                                               MDL_EXCLUSIVE) ||
+                (thd->locked_tables_mode && pos_in_locked_tables &&
+                 create_info->if_not_exists()));
+  }
+
 err:
   if (do_logging)
   {
@@ -5603,20 +5619,6 @@ err:
       table->table= pos_in_locked_tables->table;
       table->table->mdl_ticket->downgrade_lock(MDL_SHARED_NO_READ_WRITE);
     }
-  }
-  else if (!res)
-  {
-    /*
-      Ensure that we have an exclusive lock on target table if we are creating
-      non-temporary table. We don't have or need the lock if the create failed
-      because of existing table when using "if exists".
-    */
-    DBUG_ASSERT((create_info->tmp_table()) || create_res < 0 ||
-                thd->mdl_context.is_lock_owner(MDL_key::TABLE, table->db.str,
-                                               table->table_name.str,
-                                               MDL_EXCLUSIVE) ||
-                (thd->locked_tables_mode && pos_in_locked_tables &&
-                 create_info->if_not_exists()));
   }
 
   DBUG_RETURN(res != 0);
