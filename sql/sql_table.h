@@ -179,12 +179,11 @@ bool mysql_rm_table(THD *thd,TABLE_LIST *tables, bool if_exists,
                     bool dont_log_query);
 int mysql_rm_table_no_locks(THD *thd, TABLE_LIST *tables,
                             const LEX_CSTRING *db,
-                            DDL_LOG_STATE *ddl_log_state,
+                            Atomic_replace_info *atomic_replace_info,
                             bool if_exists,
                             bool drop_temporary, bool drop_view,
                             bool drop_sequence,
-                            bool dont_log_query, bool dont_free_locks,
-                            bool atomic_replace= false);
+                            bool dont_log_query, bool dont_free_locks);
 bool log_drop_table(THD *thd, const LEX_CSTRING *db_name,
                     const LEX_CSTRING *table_name, const LEX_CSTRING *handler,
                     bool partitioned, const LEX_CUSTRING *id,
@@ -217,11 +216,8 @@ bool check_engine(THD *, const char *, const char *, HA_CREATE_INFO *);
 bool make_tmp_name(THD *thd, const char *prefix, const TABLE_LIST *orig, TABLE_LIST *res);
 
 bool create_table_exists(THD *thd,
-                         DDL_LOG_STATE *ddl_log_state_create,
-                         DDL_LOG_STATE *ddl_log_state_rm,
                          const LEX_CSTRING &db,
                          const LEX_CSTRING &table_name,
-                         const TABLE_LIST *tmp_name,
                          const DDL_options_st options,
                          HA_CREATE_INFO *create_info,
                          int &error);

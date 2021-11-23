@@ -1041,7 +1041,7 @@ bool mysql_rm_table(THD *thd,TABLE_LIST *tables, bool if_exists,
 
   /* mark for close and remove all cached entries */
   thd->push_internal_handler(&err_handler);
-  error= mysql_rm_table_no_locks(thd, tables, &thd->db, (DDL_LOG_STATE*) 0,
+  error= mysql_rm_table_no_locks(thd, tables, &thd->db, NULL,
                                  if_exists,
                                  drop_temporary,
                                  false, drop_sequence, dont_log_query,
@@ -1174,12 +1174,12 @@ bool make_tmp_name(THD *thd, const char *prefix, const TABLE_LIST *orig, TABLE_L
 
 int mysql_rm_table_no_locks(THD *thd, TABLE_LIST *tables,
                             const LEX_CSTRING *current_db,
-                            DDL_LOG_STATE *ddl_log_state,
+                            Atomic_replace_info *atomic_replace_info,
                             bool if_exists,
                             bool drop_temporary, bool drop_view,
                             bool drop_sequence,
                             bool dont_log_query,
-                            bool dont_free_locks, bool atomic_replace)
+                            bool dont_free_locks)
 {
   TABLE_LIST *table;
   char path[FN_REFLEN + 1];
@@ -1201,6 +1201,15 @@ int mysql_rm_table_no_locks(THD *thd, TABLE_LIST *tables,
   String normal_tables;
   String built_trans_tmp_query, built_non_trans_tmp_query;
   DBUG_ENTER("mysql_rm_table_no_locks");
+
+  DDL_LOG_STATE *ddl_log_state= NULL;
+  bool atomic_replace= false;
+
+  if (atomic_replace_info)
+  {
+    ddl_log_state= atomic_replace_info->ddl_log_state_rm;
+    atomic_replace= (atomic_replace_info->tmp_name != NULL);
+  }
 
   if (!ddl_log_state)
   {
@@ -1668,26 +1677,39 @@ report_error:
     if (if_exists && non_existing_table_error(error))
       error= 0;
 
-    if (!error && table_dropped)
+    if (!error)
     {
-      PSI_CALL_drop_table_share(temporary_table_was_dropped,
-                                db.str, (uint)db.length,
-                                table_name.str, (uint)table_name.length);
-      mysql_audit_drop_table(thd, table);
-      if (!is_temporary)
+      if (table_dropped)
+      {
+        PSI_CALL_drop_table_share(temporary_table_was_dropped,
+                                  db.str, (uint)db.length,
+                                  table_name.str, (uint)table_name.length);
+        mysql_audit_drop_table(thd, table);
+      }
+      if (!is_temporary && (atomic_replace || table_dropped))
       {
         backup_log_info ddl_log;
-        bzero(&ddl_log, sizeof(ddl_log));
-        ddl_log.query= { C_STRING_WITH_LEN("DROP") };
-        if ((ddl_log.org_partitioned= (partition_engine_name.str != 0)))
-          ddl_log.org_storage_engine_name= partition_engine_name;
+        backup_log_info *d;
+        DBUG_ASSERT(!atomic_replace || atomic_replace_info);
+        DBUG_ASSERT(!(atomic_replace && table_dropped));
+        if (atomic_replace_info)
+          d= &atomic_replace_info->drop_entry;
         else
-          lex_string_set(&ddl_log.org_storage_engine_name,
+        {
+          d= &ddl_log;
+          bzero(d, sizeof(*d));
+        }
+        d->query= { C_STRING_WITH_LEN("DROP") };
+        if ((d->org_partitioned= (partition_engine_name.str != 0)))
+          d->org_storage_engine_name= partition_engine_name;
+        else
+          lex_string_set(&d->org_storage_engine_name,
                          ha_resolve_storage_engine_name(hton));
-        ddl_log.org_database=     table->db;
-        ddl_log.org_table=        table->table_name;
-        ddl_log.org_table_id=     version;
-        backup_log_ddl(&ddl_log);
+        d->org_database=     table->db;
+        d->org_table=        table->table_name;
+        d->org_table_id=     version;
+        if (table_dropped)
+          backup_log_ddl(d);
       }
     }
     if (!was_view && !atomic_replace)
@@ -4162,21 +4184,16 @@ err:
 }
 
 
-static
-inline bool handle_atomic_replace(THD *thd,
-                         DDL_LOG_STATE *ddl_log_state_create,
-                         DDL_LOG_STATE *ddl_log_state_rm,
-                         const LEX_CSTRING &db,
-                         const LEX_CSTRING &table_name,
-                         const TABLE_LIST *tmp_name,
-                         const DDL_options_st options,
-                         HA_CREATE_INFO *create_info)
+inline
+bool HA_CREATE_INFO::handle_atomic_replace(THD *thd, const LEX_CSTRING &db,
+                                           const LEX_CSTRING &table_name,
+                                           const DDL_options_st options)
 {
   DBUG_ASSERT(options.or_replace());
-  DBUG_ASSERT(create_info->ok_atomic_replace());
+  DBUG_ASSERT(ok_atomic_replace());
   ddl_log_link_events(ddl_log_state_rm, ddl_log_state_create);
-  if (ddl_log_rename_table(thd, ddl_log_state_rm, create_info->db_type,
-                            &db, &table_name, &tmp_name->db, &tmp_name->table_name))
+  if (ddl_log_rename_table(thd, ddl_log_state_rm, db_type, &db, &table_name,
+                           &tmp_name->db, &tmp_name->table_name))
     return true;
   debug_crash_here("ddl_log_replace_after_log_rename");
   return false;
@@ -4184,24 +4201,20 @@ inline bool handle_atomic_replace(THD *thd,
 
 
 bool create_table_exists(THD *thd,
-                         DDL_LOG_STATE *ddl_log_state_create,
-                         DDL_LOG_STATE *ddl_log_state_rm,
                          const LEX_CSTRING &db,
                          const LEX_CSTRING &table_name,
-                         const TABLE_LIST *tmp_name,
                          const DDL_options_st options,
                          HA_CREATE_INFO *create_info,
                          int &error)
 {
   handlerton *db_type;
-  const bool atomic_replace= tmp_name != NULL;
+  const bool atomic_replace= create_info->tmp_name != NULL;
 
   if (!ha_table_exists(thd, &db, &table_name, &create_info->org_tabledef_version,
       NULL, &db_type))
   {
     if (atomic_replace &&
-        handle_atomic_replace(thd, ddl_log_state_create, ddl_log_state_rm, db,
-                              table_name, tmp_name, options, create_info))
+        create_info->handle_atomic_replace(thd, db, table_name, options))
       return true;
     return false;
   }
@@ -4226,8 +4239,7 @@ bool create_table_exists(THD *thd,
 
     if (atomic_replace)
     {
-      if (handle_atomic_replace(thd, ddl_log_state_create, ddl_log_state_rm, db,
-                                table_name, tmp_name, options, create_info))
+      if (create_info->handle_atomic_replace(thd, db, table_name, options))
         return true;
     }
     else
@@ -4240,8 +4252,8 @@ bool create_table_exists(THD *thd,
     }
     /* Remove normal table without logging. Keep tables locked */
     if (mysql_rm_table_no_locks(thd, &table_list, &thd->db,
-                                ddl_log_state_rm,
-                                0, 0, 0, 0, 1, 1, atomic_replace))
+                                create_info,
+                                0, 0, 0, 0, 1, 1))
       return true;
 
     debug_crash_here("ddl_log_create_after_drop");
@@ -4444,8 +4456,7 @@ int create_table_impl(THD *thd,
     }
 
     if (!internal_tmp_table &&
-        create_table_exists(thd, NULL, ddl_log_state_rm, db, table_name,
-                            NULL, options, create_info, error))
+        create_table_exists(thd, db, table_name, options, create_info, error))
       goto err;
   }
 
@@ -4665,8 +4676,7 @@ int mysql_create_table_no_lock(THD *thd,
       DBUG_ASSERT(thd->is_error());
       /* Drop the table as it wasn't completely done */
       if (!mysql_rm_table_no_locks(thd, table_list, &thd->db,
-                                   (DDL_LOG_STATE*) 0,
-                                   1,
+                                   NULL, 1,
                                    create_info->tmp_table(),
                                    false, true /* Sequence*/,
                                    true /* Don't log_query */,
@@ -4715,6 +4725,11 @@ bool mysql_create_table(THD *thd, TABLE_LIST *create_table,
 
   bzero(&ddl_log_state_create, sizeof(ddl_log_state_create));
   bzero(&ddl_log_state_rm, sizeof(ddl_log_state_rm));
+  if (atomic_replace)
+    create_info->tmp_name= &new_table;
+  create_info->ddl_log_state_create= &ddl_log_state_create;
+  create_info->ddl_log_state_rm= &ddl_log_state_rm;
+
 
   /* Copy temporarily the statement flags to thd for lock_table_names() */
   save_thd_create_info_options= thd->lex->create_info.options;
@@ -4788,8 +4803,8 @@ bool mysql_create_table(THD *thd, TABLE_LIST *create_table,
   if (atomic_replace)
   {
     create_info->table= orig_table->table;
-    if (create_table_exists(thd, &ddl_log_state_create, &ddl_log_state_rm, orig_table->db,
-                            orig_table->table_name, &new_table, *create_info, create_info, result))
+    if (create_table_exists(thd, orig_table->db, orig_table->table_name, *create_info, create_info,
+                            result))
     {
       result= 1;
       goto err;
@@ -4852,17 +4867,17 @@ err:
     {
       backup_log_info ddl_log;
       bzero(&ddl_log, sizeof(ddl_log));
+      ddl_log.query= { C_STRING_WITH_LEN("CREATE") };
       ddl_log.org_partitioned= (create_info->db_type == partition_hton);
       ddl_log.org_storage_engine_name= create_info->new_storage_engine_name;
       ddl_log.org_database=     create_table->db;
       ddl_log.org_table=        create_table->table_name;
       ddl_log.org_table_id=     create_info->tabledef_version;
-      if (atomic_replace)
+      if (create_info->drop_entry.query.length)
       {
-        ddl_log.query= { C_STRING_WITH_LEN("DROP") };
-        backup_log_ddl(&ddl_log);
+        DBUG_ASSERT(atomic_replace);
+        backup_log_ddl(&create_info->drop_entry);
       }
-      ddl_log.query= { C_STRING_WITH_LEN("CREATE") };
       backup_log_ddl(&ddl_log);
     }
   }
@@ -5231,6 +5246,10 @@ bool mysql_create_like_table(THD* thd, TABLE_LIST* table,
 
   bzero(&ddl_log_state_create, sizeof(ddl_log_state_create));
   bzero(&ddl_log_state_rm, sizeof(ddl_log_state_rm));
+  if (atomic_replace)
+    local_create_info.tmp_name= &new_table;
+  local_create_info.ddl_log_state_create= &ddl_log_state_create;
+  local_create_info.ddl_log_state_rm= &ddl_log_state_rm;
 
 #ifdef WITH_WSREP
   if (WSREP(thd) && !thd->wsrep_applier &&
@@ -5353,8 +5372,7 @@ bool mysql_create_like_table(THD* thd, TABLE_LIST* table,
   if (atomic_replace)
   {
     local_create_info.table= orig_table->table;
-    if (create_table_exists(thd, &ddl_log_state_create, &ddl_log_state_rm, orig_table->db,
-                            orig_table->table_name, &new_table, local_create_info,
+    if (create_table_exists(thd, orig_table->db, orig_table->table_name, local_create_info,
                             &local_create_info, res))
       goto err;
     local_create_info.table= 0;
@@ -5574,16 +5592,16 @@ err:
   {
     backup_log_info ddl_log;
     bzero(&ddl_log, sizeof(ddl_log));
+    ddl_log.query= { C_STRING_WITH_LEN("CREATE") };
     ddl_log.org_storage_engine_name= local_create_info.new_storage_engine_name;
     ddl_log.org_database=     table->db;
     ddl_log.org_table=        table->table_name;
     ddl_log.org_table_id=     local_create_info.tabledef_version;
-    if (atomic_replace)
+    if (local_create_info.drop_entry.query.length)
     {
-      ddl_log.query= { C_STRING_WITH_LEN("DROP") };
-      backup_log_ddl(&ddl_log);
+      DBUG_ASSERT(atomic_replace);
+      backup_log_ddl(&local_create_info.drop_entry);
     }
-    ddl_log.query= { C_STRING_WITH_LEN("CREATE") };
     backup_log_ddl(&ddl_log);
   }
 

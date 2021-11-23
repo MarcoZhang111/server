@@ -35,6 +35,7 @@
 #include "sql_array.h"          /* Dynamic_array<> */
 #include "mdl.h"
 #include "vers_string.h"
+#include "backup.h"
 
 #include "sql_analyze_stmt.h" // for Exec_time_tracker 
 
@@ -2378,6 +2379,32 @@ struct Table_scope_and_contents_source_st:
 
 };
 
+typedef struct st_ddl_log_state DDL_LOG_STATE;
+
+struct Atomic_replace_info
+{
+  TABLE_LIST *tmp_name;
+  DDL_LOG_STATE *ddl_log_state_create;
+  DDL_LOG_STATE *ddl_log_state_rm;
+  backup_log_info drop_entry;
+
+  Atomic_replace_info() :
+    tmp_name(NULL),
+    ddl_log_state_create(NULL),
+    ddl_log_state_rm(NULL)
+    {
+      bzero(&drop_entry, sizeof(drop_entry));
+    }
+
+  Atomic_replace_info(DDL_LOG_STATE *ddl_log_state_rm) :
+    tmp_name(NULL),
+    ddl_log_state_create(NULL),
+    ddl_log_state_rm(ddl_log_state_rm)
+    {
+      bzero(&drop_entry, sizeof(drop_entry));
+    }
+};
+
 
 /**
   This struct is passed to handler table routines, e.g. ha_create().
@@ -2385,7 +2412,8 @@ struct Table_scope_and_contents_source_st:
   parts are handled on the SQL level and are not needed on the handler level.
 */
 struct HA_CREATE_INFO: public Table_scope_and_contents_source_st,
-                       public Schema_specification_st
+                       public Schema_specification_st,
+                       public Atomic_replace_info
 {
   /* TODO: remove after MDEV-20865 */
   Alter_info *alter_info;
@@ -2435,6 +2463,9 @@ struct HA_CREATE_INFO: public Table_scope_and_contents_source_st,
     return !tmp_table() && !(db_type->flags & HTON_EXPENSIVE_RENAME) &&
       DBUG_EVALUATE_IF("ddl_log_expensive_rename", false, true);
   }
+  bool
+  handle_atomic_replace(THD *thd, const LEX_CSTRING &db, const LEX_CSTRING &table_name,
+                        const DDL_options_st options);
 };
 
 

@@ -4490,6 +4490,7 @@ TABLE *select_create::create_table_from_items(THD *thd, List<Item> *items,
     create_info->options|= HA_CREATE_TMP_ALTER;
     select_create::create_table= &new_table;
     select_insert::table_list= &new_table;
+    create_info->tmp_name= &new_table;
   }
 
   /*
@@ -5047,8 +5048,8 @@ bool select_create::send_eof()
     }
 
     create_info->table= orig_table->table;
-    if (create_table_exists(thd, &ddl_log_state_create, &ddl_log_state_rm, orig_table->db,
-                            orig_table->table_name, &new_table, *create_info, create_info, result))
+    if (create_table_exists(thd, orig_table->db, orig_table->table_name, *create_info,
+                            create_info, result))
     {
       abort_result_set();
       DBUG_RETURN(true);
@@ -5173,6 +5174,7 @@ bool select_create::send_eof()
     /* Log query to ddl log */
     backup_log_info ddl_log;
     bzero(&ddl_log, sizeof(ddl_log));
+    ddl_log.query= { C_STRING_WITH_LEN("CREATE") };
     if ((ddl_log.org_partitioned= (create_info->db_type == partition_hton)))
       ddl_log.org_storage_engine_name= create_info->new_storage_engine_name;
     else
@@ -5181,12 +5183,11 @@ bool select_create::send_eof()
     ddl_log.org_database=   create_table->db;
     ddl_log.org_table=      create_table->table_name;
     ddl_log.org_table_id=   create_info->tabledef_version;
-    if (atomic_replace)
+    if (create_info->drop_entry.query.length)
     {
-      ddl_log.query= { C_STRING_WITH_LEN("DROP") };
-      backup_log_ddl(&ddl_log);
+      DBUG_ASSERT(atomic_replace);
+      backup_log_ddl(&create_info->drop_entry);
     }
-    ddl_log.query= { C_STRING_WITH_LEN("CREATE") };
     backup_log_ddl(&ddl_log);
   }
   /*
@@ -5199,6 +5200,12 @@ bool select_create::send_eof()
   debug_crash_here("ddl_log_replace_before_remove_backup");
   if (ddl_log_revert(thd, &ddl_log_state_rm))
   {
+    if (atomic_replace)
+    {
+      /* Now we have to log DROP_AFTER_CREATE */
+      atomic_replace= false;
+      create_table= &new_table;
+    }
     abort_result_set();
     DBUG_RETURN(true);
   }
@@ -5354,11 +5361,10 @@ void select_create::abort_result_set()
         /* Remove logging of drop, create + insert rows */
         binlog_reset_cache(thd);
       }
-      else if (!tmp_table)
+      else if (!tmp_table && !atomic_replace)
       {
         backup_log_info ddl_log;
         bzero(&ddl_log, sizeof(ddl_log));
-        // FIXME: do we need this in case of atomic_replace?
         ddl_log.query= { C_STRING_WITH_LEN("DROP_AFTER_CREATE") };
         ddl_log.org_partitioned= (create_info->db_type == partition_hton);
         ddl_log.org_storage_engine_name= create_info->org_storage_engine_name;

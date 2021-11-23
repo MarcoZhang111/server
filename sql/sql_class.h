@@ -6104,6 +6104,8 @@ public:
       bzero(&ddl_log_state_create, sizeof(ddl_log_state_create));
       bzero(&ddl_log_state_rm, sizeof(ddl_log_state_rm));
       atomic_replace= create_info->is_atomic_replace();
+      create_info->ddl_log_state_create= &ddl_log_state_create;
+      create_info->ddl_log_state_rm= &ddl_log_state_rm;
     }
   int prepare(List<Item> &list, SELECT_LEX_UNIT *u);
 
