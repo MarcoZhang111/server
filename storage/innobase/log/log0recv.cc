@@ -700,6 +700,54 @@ static struct
     defers.clear();
   }
 
+  /** Rename the deferred tablespace and update the lsn
+  @param	id	space identifier
+  @param	f_name	file name
+  @param	lsn	log sequence number
+  @return true if rename happened successfully */
+  bool rename(uint32_t id, const std::string &f_name, lsn_t lsn)
+  {
+    mysql_mutex_assert_owner(&recv_sys.mutex);
+    auto it= defers.find(id);
+    if (it == defers.end())
+      return false;
+
+    const char *filename= f_name.c_str();
+    if (srv_operation == SRV_OPERATION_RESTORE)
+    {
+      /* Replace absolute DATA DIRECTORY file paths with
+      short names relative to the backup directory. */
+      const char *name= strrchr(filename, '/');
+#ifdef _WIN32
+      if (const char *last= strrchr(filename, '\\'))
+        if (last > name)
+          name= last;
+#endif
+      if (name)
+      {
+        while (--name > filename &&
+#ifdef _WIN32
+               *name != '\\' &&
+#endif
+               *name != '/');
+        if (name > filename)
+          filename= name + 1;
+       }
+    }
+
+    char *fil_path= fil_make_filepath(nullptr, {filename, strlen(filename)},
+                                      IBD, false);
+    const item defer{lsn, fil_path, false};
+    ut_free(fil_path);
+    if (!it->second.deleted && it->second.lsn <= lsn)
+    {
+      it->second.file_name= defer.file_name;
+      it->second.lsn= lsn;
+    }
+
+    return true;
+  }
+
   /** Initialize all deferred tablespaces.
   @return whether any deferred initialization failed */
   bool reinit_all()
@@ -1165,6 +1213,13 @@ same_space:
 			FILE_* record. */
 			ut_ad(space == NULL);
 
+			if (*store != store_t::STORE_IF_EXISTS
+			    && deferred_spaces.rename(
+					static_cast<uint32_t>(
+						space_id), name, lsn)) {
+				f.name = fname.name;
+			}
+
 			if (srv_force_recovery) {
 				/* Without innodb_force_recovery,
 				missing tablespaces will only be
@@ -1187,6 +1242,7 @@ same_space:
 				deferred_spaces.add(
 					static_cast<uint32_t>(space_id),
 					name, lsn);
+				f.name = fname.name;
 			}
 			break;
 		case FIL_LOAD_INVALID:
