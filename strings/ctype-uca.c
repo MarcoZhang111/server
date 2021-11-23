@@ -6541,7 +6541,8 @@ MY_UCA_INFO my_uca_v400=
         NULL     /*   flags           */
       },
       0,         /* levelno            */
-      NULL    /* weights_2bytes */
+      NULL,    /* weights_2bytes */
+      {0}
     },
     {
       0,
@@ -6553,7 +6554,8 @@ MY_UCA_INFO my_uca_v400=
         NULL
       },
       1,        /* levelno            */
-      NULL    /* weights_2bytes */
+      NULL,    /* weights_2bytes */
+      {0}
     },
   },
 
@@ -30100,7 +30102,8 @@ MY_UCA_INFO my_uca_v520_th=
           NULL               /*   flags */
       },
       0,             /* levelno */
-      NULL        /* weights_2bytes */
+      NULL,        /* weights_2bytes */
+      {0}
     },
     {
       0x10FFFF,      /* maxchar */
@@ -30112,7 +30115,8 @@ MY_UCA_INFO my_uca_v520_th=
           NULL                  /*   flags */
       },
       1,             /* levelno */
-      NULL        /* weights_2bytes */
+      NULL,        /* weights_2bytes */
+      {0}
     },
   },
 
@@ -30148,7 +30152,8 @@ MY_UCA_INFO my_uca_v520=
 	NULL         /*   flags           */
       },
       0,             /* levelno */
-      NULL        /* weights_2bytes */
+      NULL,        /* weights_2bytes */
+      {0}
     },
 
     {
@@ -30161,7 +30166,8 @@ MY_UCA_INFO my_uca_v520=
         NULL       /*   flags */
       },
       1,           /* levelno */
-      NULL      /* weights_2bytes */
+      NULL,      /* weights_2bytes */
+      {0}
     },
   },
 
@@ -31499,6 +31505,175 @@ my_uca_true_contraction_eq(const MY_CONTRACTION *c,
 }
 
 
+/*
+  The number of elements must be a degree of 2.
+  This allows to use the faster & operator instead of the
+  slow % operator to find the remainder of the division:
+    pos= (start_pos + iteration) & MASK
+  instead of:
+    pos= (start_pos + iteration) % NUMBER_OF_PREALLOCED_HASH_ELEMENTS
+
+  DUCET as of Unicode-14.0.0 has 939 default contractions.
+  CLDR-40 has around 2601 contractions (all collations total).
+  The built-in Myanmar collation tailoring has 912 contractions.
+  4096 as the contraction prealloced hash size should be enough
+  for all collations.
+*/
+#define MY_UCA_CONTRACTION_HASH_ALLOC_ELEMENTS  4096
+#define MY_UCA_CONTRACTION_HASH_LSHIFT          2
+#define MY_UCA_CONTRACTION_HASH_MASK \
+  ((MY_UCA_CONTRACTION_HASH_ALLOC_ELEMENTS-1)>>MY_UCA_CONTRACTION_HASH_LSHIFT)
+#define MY_UCA_CONTRACTION_HASH_ALLOWED_COLLISIONS \
+  (MY_UCA_CONTRACTION_HASH_ALLOC_ELEMENTS-1)
+
+
+static uint16
+my_uca_level_booster_contractions_hash(my_wc_t a, my_wc_t b)
+{
+  return (uint16) (((a * 465 + b) & MY_UCA_CONTRACTION_HASH_MASK) <<
+                  MY_UCA_CONTRACTION_HASH_LSHIFT);
+}
+
+
+#define DBUG_UCA_CONTRACTIONS
+#ifdef DBUG_UCA_CONTRACTIONS
+static ulonglong collisions= 0;
+static ulonglong collisions_eq= 0;
+#endif
+
+
+static my_bool
+my_uca_level_booster_contractions_find_empty(
+                                  const MY_UCA_LEVEL_BOOSTER_CONTRACTIONS *cnt,
+                                  uint16 start,
+                                  uint16 *ppos)
+{
+  uint16 i;
+  for (i= 0; i < MY_UCA_CONTRACTION_HASH_ALLOWED_COLLISIONS; i++)
+  {
+    uint16 pos= (i + start) % cnt->nitems_alloced;
+    if (!cnt->item[pos].ch[0])
+    {
+      *ppos= pos;
+      return FALSE;
+    }
+  }
+  return TRUE;
+}
+
+
+static inline const uint16 *
+my_uca_level_booster_contractions_weight(
+                              const MY_UCA_LEVEL_BOOSTER_CONTRACTIONS *cnt,
+                              const my_wc_t *wc, size_t len)
+{
+  uint16 start= my_uca_level_booster_contractions_hash(wc[0], wc[1]);
+  uint16 i;
+  DBUG_ASSERT(len <= MY_UCA_MAX_CONTRACTION);
+
+  for (i=0 ; i < MY_UCA_CONTRACTION_HASH_ALLOWED_COLLISIONS; i++)
+  {
+    uint16 pos= (i + start) % cnt->nitems_alloced;
+    const MY_CONTRACTION *c= &cnt->item[pos];
+    if (!c->ch[0])
+      break;
+    if (my_uca_true_contraction_eq(c, wc, len))
+      return c->weight;
+  }
+  return NULL;
+}
+
+
+static my_bool
+my_uca_level_booster_contractions_allocate(
+                                     MY_UCA_LEVEL_BOOSTER_CONTRACTIONS *dst,
+                                     MY_CHARSET_LOADER *loader)
+{
+  size_t nbytes= MY_UCA_CONTRACTION_HASH_ALLOC_ELEMENTS * sizeof(MY_CONTRACTION);
+  bzero(dst, sizeof(*dst));
+  if (!(dst->item= (MY_CONTRACTION*) (loader->once_alloc)(nbytes)))
+    return TRUE;
+  bzero(dst->item, nbytes);
+  dst->nitems_alloced= MY_UCA_CONTRACTION_HASH_ALLOC_ELEMENTS;
+  return FALSE;
+}
+
+
+static my_bool
+my_uca_level_booster_contractions_populate(
+                                      MY_UCA_LEVEL_BOOSTER_CONTRACTIONS *dst,
+                                      const MY_CONTRACTIONS *src)
+{
+  size_t i;
+  DBUG_ASSERT(dst->nitems_alloced > 0);
+  for (i= 0; i < src->nitems; i++)
+  {
+    const MY_CONTRACTION *c= &src->item[i];
+    uint16 start= my_uca_level_booster_contractions_hash(c->ch[0], c->ch[1]);
+    if (!dst->item[start].ch[0])
+      dst->item[start]= src->item[i];
+    else
+    {
+      uint16 pos;
+#ifdef DBUG_UCA_CONTRACTIONS
+      if (dst->item[start].ch[0] != c->ch[0] &&
+          dst->item[start].ch[1] != c->ch[1])
+        collisions++;
+      else
+        collisions_eq++;
+#endif
+      if (my_uca_level_booster_contractions_find_empty(dst, start, &pos))
+        return TRUE;
+      dst->item[pos]= src->item[i];
+    }
+  }
+  return FALSE;
+}
+
+
+static const uint16 *
+my_uca_scanner_booster_contractions_find(my_uca_scanner *scanner, my_wc_t currwc)
+{
+  size_t clen= 1;
+  int flag;
+  const uchar *s, *beg[MY_UCA_MAX_CONTRACTION];
+  my_wc_t wc[MY_UCA_MAX_CONTRACTION];
+  wc[0]= currwc;
+
+  memset((void*) beg, 0, sizeof(beg));
+
+  /* Scan all contraction candidates */
+  for (s= scanner->sbeg, flag= MY_UCA_CNT_MID1;
+       clen < MY_UCA_MAX_CONTRACTION;
+       flag<<= 1)
+  {
+    int mblen;
+    if ((mblen= my_ci_mb_wc(scanner->cs, &wc[clen], s, scanner->send)) <= 0)
+      break;
+    beg[clen]= s= s + mblen;
+    if (!my_uca_can_be_contraction_part(&scanner->level->contractions,
+                                        wc[clen++], flag))
+      break;
+  }
+
+  /* Find among candidates the longest real contraction */
+  for ( ; clen > 1; clen--)
+  {
+    const uint16 *cweight;
+    if (my_uca_can_be_contraction_tail(&scanner->level->contractions,
+                                       wc[clen - 1]) &&
+        (cweight= my_uca_level_booster_contractions_weight(&scanner->level->contractions_booster,
+                                            wc, clen)))
+    {
+      scanner->sbeg= beg[clen - 1];
+      return cweight;
+    }
+  }
+
+  return NULL; /* No contractions were found */
+}
+
+
 /**
   Check if a string is a contraction,
   and return its weight array on success.
@@ -31542,6 +31717,7 @@ my_uca_contraction_weight(const MY_CONTRACTIONS *list, my_wc_t *wc, size_t len)
   @retval         ptr  - contraction weight array
 */
 
+#if 0
 static const uint16 *
 my_uca_scanner_contraction_find(my_uca_scanner *scanner, my_wc_t currwc)
 {
@@ -31583,7 +31759,7 @@ my_uca_scanner_contraction_find(my_uca_scanner *scanner, my_wc_t currwc)
 
   return NULL; /* No contractions were found */
 }
-
+#endif
 
 /**
   Find weight for contraction with previous context
@@ -31660,7 +31836,7 @@ my_uca_context_weight_find(my_uca_scanner *scanner, my_wc_t currwc)
                                           currwc))
   {
     /* Check if w[0] starts a contraction */
-    if ((cweight= my_uca_scanner_contraction_find(scanner, currwc)))
+    if ((cweight= my_uca_scanner_booster_contractions_find(scanner, currwc)))
       return cweight;
   }
   return NULL;
@@ -34219,6 +34395,21 @@ init_weight_level(MY_CHARSET_LOADER *loader, CHARSET_INFO *cs,
 
   if (cs->mbminlen == 1)
     dst->booster= my_uca_level_booster_new(loader, cs, dst);
+
+
+  if (ncontractions)
+  {
+    if (ncontractions > MY_UCA_CONTRACTION_HASH_ALLOC_ELEMENTS ||
+        my_uca_level_booster_contractions_allocate(&dst->contractions_booster,
+                                                   loader) ||
+        my_uca_level_booster_contractions_populate(&dst->contractions_booster,
+                                                   &dst->contractions))
+    {
+      my_snprintf(loader->error, sizeof(loader->error),
+                  "Can't initialize %d contractions", (int) ncontractions);
+      return TRUE;
+    }
+  }
 
   return FALSE;
 }
