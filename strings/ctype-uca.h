@@ -17,6 +17,19 @@
    Software Foundation, Inc., 51 Franklin St, Fifth Floor, Boston,
    MA 02110-1335  USA */
 
+
+/*
+  According to "Computing Implicit Weights" in
+    https://unicode.org/reports/tr10/#Values_For_Base_Table
+  (as of Unicode 14.0.0)  implicit weights for a code CP are
+  constructed as follows:
+    [.AAAA.0020.0002][.BBBB.0000.0000]
+
+  - There are two primary weights, depending on the character type and block.
+  - There is one weight on the other levels.
+*/
+
+
 typedef struct my_uca_implict_weight_t
 {
   uint16 weight[2];
@@ -210,6 +223,62 @@ my_uca_1400_implicit_weight_primary(my_wc_t code)
 
   /* Unassigned - Any other code point */
   return my_uca_implicit_weight_primary_default(0xFBC0, code);
+}
+
+
+static inline MY_UCA_IMPLICIT_WEIGHT
+my_uca_implicit_weight_primary(uint version, my_wc_t code)
+{
+  return version >= 1400 ?
+         my_uca_1400_implicit_weight_primary(code) :
+         my_uca_520_implicit_weight_primary(code);
+}
+
+
+static inline MY_UCA_IMPLICIT_WEIGHT
+my_uca_implicit_weight_secondary()
+{
+  MY_UCA_IMPLICIT_WEIGHT res;
+  res.weight[0]= 0x0020;
+  res.weight[1]= 0;
+  return res;
+}
+
+
+static inline MY_UCA_IMPLICIT_WEIGHT
+my_uca_implicit_weight_tertiary()
+{
+  MY_UCA_IMPLICIT_WEIGHT res;
+  res.weight[0]= 0x0002;
+  res.weight[1]= 0;
+  return res;
+}
+
+
+static inline MY_UCA_IMPLICIT_WEIGHT
+my_uca_implicit_weight_quaternary()
+{
+  MY_UCA_IMPLICIT_WEIGHT res;
+  res.weight[0]= 0x0001;
+  res.weight[1]= 0;
+  return res;
+}
+
+
+static inline MY_UCA_IMPLICIT_WEIGHT
+my_uca_implicit_weight_on_level(uint version, my_wc_t code, uint level)
+{
+  switch (level) {
+  case 0:
+    return my_uca_implicit_weight_primary(version, code);
+  case 1:
+    return my_uca_implicit_weight_secondary();
+  case 2:
+    return my_uca_implicit_weight_tertiary();
+  default:
+    break;
+  }
+  return my_uca_implicit_weight_quaternary();
 }
 
 

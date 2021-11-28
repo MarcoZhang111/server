@@ -537,11 +537,11 @@ my_bool parse_at_line(MY_DUCET *ducet, const char *str)
     {
       char *endptr;
       n[pos]= strtol(src, &endptr, 10);
-      if (*endptr != '.' && *endptr != '\r' && *endptr != '\n')
+      if (*endptr != '.' && *endptr != '\r' && *endptr != '\n' && *endptr != 0)
         return TRUE;
       src= endptr + 1;
     }
-    ducet->version= (uint) (n[0] * 10000 + n[1] * 100 + n[2]);
+    ducet->version= (uint) (n[0] * 100 + n[1] * 10 + n[2]);
   }
   return FALSE;
 }
@@ -656,6 +656,16 @@ print_logical_positions(const MY_DUCET_LOGICAL_POSITIONS *src,
   my_ducet_logical_position_print(&src->primary_ignorable, "primary_ignorable", ducet, opt);
   my_ducet_logical_position_print(&src->variable, "variable", ducet, opt);
   my_ducet_logical_position_print(&src->non_ignorable, "non_ignorable", ducet, opt);
+}
+
+
+static void
+print_version(const MY_DUCET *ducet, const OPT *opt)
+{
+  printf("\n");
+  printf("static const uint %s_version= %d; /* %s */\n",
+         opt->name_prefix, ducet->version, ducet->version_str);
+  printf("\n");
 }
 
 
@@ -798,28 +808,18 @@ int main(int ac, char **av)
   /* Now set implicit weights */
   for (code=0; code <= MAX_ALLOWED_CODE; code++)
   {
-    MY_UCA_IMPLICIT_WEIGHT primary;
+    uint level;
 
     if (ducet.single_chars[code].weight.weight_length)
       continue;
 
-    if (ducet.version >= 140000)
-      primary= my_uca_1400_implicit_weight_primary((my_wc_t) code);
-    else
-      primary= my_uca_520_implicit_weight_primary((my_wc_t) code);
-
-    ducet.single_chars[code].weight.weight[0][0]= primary.weight[0];
-    ducet.single_chars[code].weight.weight[0][1]= primary.weight[1];
-    
-    ducet.single_chars[code].weight.weight[1][0]= 0x0020;
-    ducet.single_chars[code].weight.weight[1][1]= 0x0000;
-    
-    ducet.single_chars[code].weight.weight[2][0]= 0x0002;
-    ducet.single_chars[code].weight.weight[2][1]= 0x0000;
-    
-    ducet.single_chars[code].weight.weight[3][0]= 0x0001;
-    ducet.single_chars[code].weight.weight[3][2]= 0x0000;
-    
+    for (level= 0; level < 4; level++)
+    {
+      MY_UCA_IMPLICIT_WEIGHT weight;
+      weight= my_uca_implicit_weight_on_level(ducet.version, code, level);
+      ducet.single_chars[code].weight.weight[level][0]= weight.weight[0];
+      ducet.single_chars[code].weight.weight[level][1]= weight.weight[1];
+    }
     ducet.single_chars[code].weight.weight_length= 2;
   }
 
@@ -974,6 +974,7 @@ int main(int ac, char **av)
     if (!options.no_contractions)
       print_contraction_list(&ducet.contractions, w, &options);
   }
+  print_version(&ducet, &options);
   print_logical_positions(&ducet.logical_positions, &ducet, &options);
   
   return 0;

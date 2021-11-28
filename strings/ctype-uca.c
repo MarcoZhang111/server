@@ -34,6 +34,7 @@
 
 #include "strings_def.h"
 #include <m_ctype.h>
+#include "ctype-uca.h"
 
 #define  MY_CS_COMMON_UCA_FLAGS (MY_CS_COMPILED|MY_CS_STRNXFRM|MY_CS_UNICODE|MY_CS_NON1TO1)
 
@@ -6577,6 +6578,9 @@ MY_UCA_INFO my_uca_v400=
 
   0x0009,    /* first_variable            */
   0x2183,    /* last_variable             */
+
+  /* Misc */
+  400        /* Version */
 };
 
 /******************************************************/
@@ -30137,6 +30141,9 @@ MY_UCA_INFO my_uca_v520_th=
 
   0x0009,    /* first_variable            if alt=non-ignorable: p != ignore */
   0x1D371,   /* last_variable             if alt=shifter: p,s,t == ignore   */
+
+  /* Misc */
+  520        /* Version */
 };
 
 MY_UCA_INFO my_uca_v520=
@@ -30188,6 +30195,9 @@ MY_UCA_INFO my_uca_v520=
 
   0x0009,    /* first_variable            if alt=non-ignorable: p != ignore */
   0x1D371,   /* last_variable             if alt=shifter: p,s,t == ignore   */
+
+  /* Misc */
+  520        /* Version */
 };
 
 
@@ -31845,62 +31855,14 @@ my_uca_context_weight_find(my_uca_scanner *scanner, my_wc_t currwc)
 
 /****************************************************************/
 
-/**
-  Implicit weights for a code CP are constructed as follows:
-    [.AAAA.0020.0002][.BBBB.0000.0000]
-
-  where:
-    AAAA= BASE + (CP >> 15);
-    BBBB= (CP & 0x7FFF) | 0x8000;
-
-  There are two weights in the primary level (AAAA followed by BBBB).
-  There is one weight on other levels:
-  - 0020 on the secondary level
-  - 0002 on the tertiary level
-*/
-
-
-/**
-  Return BASE for an implicit weight on the primary level
-
-  According to UCA, BASE is calculated as follows:
-  - FB40 for Unified_Ideograph=True AND
-             ((Block=CJK_Unified_Ideograph) OR
-              (Block=CJK_Compatibility_Ideographs))
-  - FB80 for Unified_Ideograph=True AND NOT
-             ((Block=CJK_Unified_Ideograph) OR
-              (Block=CJK_Compatibility_Ideographs))
-  - FBC0 for any other code point
-  TODO: it seems we're not handling BASE correctly:
-  - check what are those blocks
-  - there are more Unified Ideograph blocks in the latest Unicode versions
-*/
-static inline uint16
-my_uca_implicit_weight_base(my_wc_t code)
-{
-  if (code >= 0x3400 && code <= 0x4DB5)
-    return 0xFB80;
-  if (code >= 0x4E00 && code <= 0x9FA5)
-    return 0xFB40;
-  return 0xFBC0;
-}
-
-
 static inline void
-my_uca_implicit_weight_put(uint16 *to, my_wc_t code, uint level)
+my_uca_implicit_weight_put(uint16 *to, const MY_UCA_INFO *src_uca,
+                           my_wc_t code, uint level)
 {
-  switch (level) {
-  case 1: to[0]= 0x0020; to[1]= 0; break; /* Secondary level */
-  case 2: to[0]= 0x0002; to[1]= 0; break; /* Tertiary level */
-  case 3: to[0]= 0x0001; to[1]= 0; break; /* Quaternary level */
-  default:
-    DBUG_ASSERT(0);
-  case 0:
-    break;
-  }
-  /* Primary level */
-  to[0]= (uint16)(code >> 15) + my_uca_implicit_weight_base(code);
-  to[1]= (code & 0x7FFF) | 0x8000;
+  MY_UCA_IMPLICIT_WEIGHT weight;
+  weight= my_uca_implicit_weight_on_level(src_uca->version, code, level);
+  to[0]= weight.weight[0];
+  to[1]= weight.weight[1];
   to[2]= 0;
 }
 
@@ -31922,10 +31884,12 @@ static inline int
 my_uca_scanner_next_implicit_primary(my_uca_scanner *scanner)
 {
   my_wc_t wc= (scanner->page << 8) + scanner->code;
-  scanner->implicit[0]= (wc & 0x7FFF) | 0x8000; /* The second weight */
+  uint version= scanner->cs->uca->version;
+  MY_UCA_IMPLICIT_WEIGHT weight= my_uca_implicit_weight_primary(version, wc);
+  scanner->implicit[0]= weight.weight[1];
   scanner->implicit[1]= 0;                      /* 0 terminator      */
   scanner->wbeg= scanner->implicit;
-  return my_uca_implicit_weight_base(wc) + (wc >> 15);
+  return weight.weight[0];
 }
 
 
@@ -32712,7 +32676,7 @@ typedef struct my_coll_rules_st
 {
   uint version;              /* Unicode version, e.g. 400 or 520  */
   uint strength;             /* Number of levels                  */
-  MY_UCA_INFO *uca;          /* Unicode weight data               */
+  const MY_UCA_INFO *uca;    /* Unicode weight data               */
   size_t nrules;             /* Number of rules in the rule array */
   size_t mrules;             /* Number of allocated rules         */
   MY_COLL_RULE *rule;        /* Rule array                        */
@@ -33402,8 +33366,8 @@ my_coll_rule_parse(MY_COLL_RULES *rules,
   Copies UCA weights for a given "uint" string
   to the given location.
   
+  @dst        destination UCA weight level data
   @src_uca    source UCA weight data
-  @dst_uca    destination UCA weight data
   @to         destination address
   @to_length  size of destination
   @nweights   OUT number of weights put to "to"
@@ -33415,6 +33379,7 @@ my_coll_rule_parse(MY_COLL_RULES *rules,
 
 static my_bool
 my_char_weight_put(MY_UCA_WEIGHT_LEVEL *dst,
+                   const MY_UCA_INFO *src_uca,
                    uint16 *to, size_t to_length, size_t *nweights,
                    my_wc_t *str, size_t len)
 {
@@ -33450,7 +33415,7 @@ my_char_weight_put(MY_UCA_WEIGHT_LEVEL *dst,
       if (!from)
       {
         from= implicit_weights;
-        my_uca_implicit_weight_put(implicit_weights, *str, dst->levelno);
+        my_uca_implicit_weight_put(implicit_weights, src_uca, *str, dst->levelno);
       }
       str++;
       len--;
@@ -33507,6 +33472,7 @@ my_uca_copy_page(MY_CHARSET_LOADER *loader,
 static my_bool
 my_uca_generate_implicit_page(MY_CHARSET_LOADER *loader,
                               MY_UCA_WEIGHT_LEVEL *dst,
+                              const MY_UCA_INFO *src_uca,
                               uint page)
 {
   uint chc, size= 256 * dst->lengths[page] * sizeof(uint16);
@@ -33517,7 +33483,7 @@ my_uca_generate_implicit_page(MY_CHARSET_LOADER *loader,
   for (chc= 0 ; chc < 256; chc++)
   {
     uint16 *w= dst->weights[page] + chc * dst->lengths[page];
-    my_uca_implicit_weight_put(w, (page << 8) + chc, dst->levelno);
+    my_uca_implicit_weight_put(w, src_uca, (page << 8) + chc, dst->levelno);
   }
   return FALSE;
 }
@@ -33696,7 +33662,7 @@ apply_one_rule(MY_CHARSET_LOADER *loader,
                                     r->curr, (uint)nshift, r->with_context);
     /* Store weights of the "reset to" character */
     dst->contractions.nitems--; /* Temporarily hide - it's incomplete */
-    rc= my_char_weight_put(dst,
+    rc= my_char_weight_put(dst, rules->uca,
                            to, MY_UCA_CONTRACTION_MAX_WEIGHT_SIZE, &nweights,
                            r->base, nreset);
     dst->contractions.nitems++; /* Activate, now it's complete */
@@ -33707,7 +33673,8 @@ apply_one_rule(MY_CHARSET_LOADER *loader,
     DBUG_ASSERT(dst->weights[pagec]);
     to= my_char_weight_addr(dst, r->curr[0]);
     /* Store weights of the "reset to" character */
-    rc= my_char_weight_put(dst, to, dst->lengths[pagec], &nweights, r->base, nreset);
+    rc= my_char_weight_put(dst, rules->uca,
+                           to, dst->lengths[pagec], &nweights, r->base, nreset);
   }
   if (rc)
   {
@@ -33776,7 +33743,9 @@ static uint my_weight_size_on_page(const MY_UCA_WEIGHT_LEVEL *src, uint page)
 */
 static my_bool
 my_uca_generate_page(MY_CHARSET_LOADER *loader,
-                     MY_UCA_WEIGHT_LEVEL *dst, const MY_UCA_WEIGHT_LEVEL *src,
+                     MY_UCA_WEIGHT_LEVEL *dst,
+                     const MY_UCA_INFO *src_uca,
+                     const MY_UCA_WEIGHT_LEVEL *src,
                      uint pageno)
 {
   DBUG_ASSERT(dst->levelno == src->levelno);
@@ -33791,7 +33760,7 @@ my_uca_generate_page(MY_CHARSET_LOADER *loader,
       Generate default weights for all characters on this page
       algorithmically now, at initialization time.
     */
-    my_uca_generate_implicit_page(loader, dst, pageno);
+    my_uca_generate_implicit_page(loader, dst, src_uca, pageno);
 }
 
 
@@ -33802,6 +33771,7 @@ my_uca_generate_page(MY_CHARSET_LOADER *loader,
 static my_bool
 my_uca_generate_pages(MY_CHARSET_LOADER *loader,
                       MY_UCA_WEIGHT_LEVEL *dst,
+                      const MY_UCA_INFO *src_uca,
                       const MY_UCA_WEIGHT_LEVEL *src,
                       uint npages)
 {
@@ -33826,7 +33796,7 @@ my_uca_generate_pages(MY_CHARSET_LOADER *loader,
     }
 
     /* Found a page with some special rules. */
-    if (my_uca_generate_page(loader, dst, src, page))
+    if (my_uca_generate_page(loader, dst, src_uca, src, page))
       return TRUE;
   }
   return FALSE;
@@ -34352,7 +34322,7 @@ init_weight_level(MY_CHARSET_LOADER *loader, CHARSET_INFO *cs,
 
   ncontractions += (int)src->contractions.nitems;
 
-  if ((my_uca_generate_pages(loader, dst, src, (uint)npages)))
+  if ((my_uca_generate_pages(loader, dst, rules->uca, src, (uint)npages)))
     return TRUE;
 
   if (ncontractions)
