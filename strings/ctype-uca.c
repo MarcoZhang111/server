@@ -30201,6 +30201,63 @@ MY_UCA_INFO my_uca_v520=
 };
 
 
+#include "ctype-uca1400.h"
+
+static MY_UCA_INFO my_uca_v1400=
+{
+  {
+    {
+      0x10FFFF,      /* maxchar           */
+      (uchar *) uca1400_length,
+      (uint16 **) uca1400_weight,
+      {              /* Contractions:     */
+        array_elements(uca1400_contractions), /* nitems */
+        uca1400_contractions,                 /* item   */
+        NULL         /*   flags           */
+      },
+      0,             /* levelno */
+      NULL,          /* weights_2bytes */
+      {0}
+    },
+
+    {
+      0x10FFFF,      /* maxchar */
+      (uchar *) uca1400_length_secondary,
+      (uint16 **) uca1400_weight_secondary,
+      {              /* Contractions: */
+        array_elements(uca1400_contractions_secondary), /* nitems */
+        uca1400_contractions_secondary,                 /* item   */
+        NULL         /*   flags */
+      },
+      1,             /* levelno */
+      NULL,          /* weights_2bytes */
+      {0}
+    },
+  },
+
+  uca1400_non_ignorable_first,
+  uca1400_non_ignorable_last,
+
+  uca1400_primary_ignorable_first,
+  uca1400_primary_ignorable_last,
+
+  uca1400_secondary_ignorable_first,
+  uca1400_secondary_ignorable_last,
+
+  uca1400_tertiary_ignorable_first,
+  uca1400_tertiary_ignorable_last,
+
+  0x0000,    /* first_trailing */
+  0x0000,    /* last_trailing  */
+
+  uca1400_variable_first,
+  uca1400_variable_last,
+
+  /* Misc */
+  uca1400_version
+};
+
+
 /******************************************************/
 
 /*
@@ -37369,6 +37426,39 @@ struct charset_info_st my_charset_utf8mb4_unicode_520_ci=
     NULL,                /* to_upper     */
     NULL,                /* sort_order   */
     &my_uca_v520,        /* uca          */
+    NULL,                /* tab_to_uni   */
+    NULL,                /* tab_from_uni */
+    &my_unicase_unicode520,/* caseinfo   */
+    NULL,                /* state_map    */
+    NULL,                /* ident_map    */
+    8,                   /* strxfrm_multiply */
+    1,                   /* caseup_multiply  */
+    1,                   /* casedn_multiply  */
+    1,                   /* mbminlen     */
+    4,                   /* mbmaxlen     */
+    9,                   /* min_sort_char */
+    0x10FFFF,            /* max_sort_char */
+    ' ',                 /* pad char      */
+    0,                   /* escape_with_backslash_is_dangerous */
+    1,                   /* levels_for_order   */
+    &my_charset_utf8mb4_handler,
+    &my_uca_collation_handler_utf8mb4
+};
+
+
+struct charset_info_st my_charset_utf8mb4_unicode_1400_ci=
+{
+    456,0,0,             /* number       */
+    MY_CS_UTF8MB4_UCA_FLAGS,/* flags     */
+    { charset_name_utf8mb4, charset_name_utf8mb4_length }, /* csname */
+    { STRING_WITH_LEN(MY_UTF8MB4 "_unicode_1400_ci") },    /* name */
+    "",                  /* comment      */
+    "",                  /* tailoring    */
+    ctype_utf8mb3,       /* ctype        */
+    NULL,                /* to_lower     */
+    NULL,                /* to_upper     */
+    NULL,                /* sort_order   */
+    &my_uca_v1400,       /* uca          */
     NULL,                /* tab_to_uni   */
     NULL,                /* tab_from_uni */
     &my_unicase_unicode520,/* caseinfo   */
