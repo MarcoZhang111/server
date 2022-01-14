@@ -24335,6 +24335,7 @@ bool JOIN::rollup_make_fields(List<Item> &fields_arg, List<Item> &sel_fields,
     uint pos= send_group_parts - level -1;
     bool real_fields= 0;
     Item *item;
+    Item *item_tmp;
     List_iterator<Item> new_it(rollup.fields[pos]);
     Ref_ptr_array ref_array_start= rollup.ref_pointer_arrays[pos];
     ORDER *start_group;
@@ -24400,6 +24401,20 @@ bool JOIN::rollup_make_fields(List<Item> &fields_arg, List<Item> &sel_fields,
             item= null_item;
 	    break;
 	  }
+	  else
+          {
+             item_tmp = group_tmp->item_ptr ;
+             if(item_tmp->type() != Item::FIELD_ITEM && item->type() == Item::FIELD_ITEM && item->eq(group_tmp->item_ptr->next,0))
+             {
+                Item_null_result *null_item= new (thd->mem_root) Item_null_result(thd);
+                if (!null_item)
+                    return 1;
+                item->maybe_null= 1;          // Value will be null sometimes
+                null_item->result_field= item->get_tmp_table_field();
+                item= null_item;
+                break;
+             }
+          }
 	}
       }
       ref_array_start[ref_array_ix]= item;
